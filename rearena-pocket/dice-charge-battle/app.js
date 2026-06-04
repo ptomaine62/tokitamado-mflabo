@@ -237,6 +237,10 @@ function hasAccess() {
   return localStorage.getItem(STORAGE_KEYS.access) === ACCESS_CODE;
 }
 
+function isAccessGranted() {
+  return hasAccess();
+}
+
 function setAccessGranted() {
   localStorage.setItem(STORAGE_KEYS.access, ACCESS_CODE);
 }
@@ -1390,6 +1394,31 @@ function setSettingByPath(path, value) {
   target[key] = value;
 }
 
+function returnToAccessScreen() {
+  safeLockReason = "";
+  activeTestChannel = null;
+
+  if (state) {
+    state.phase = PHASE.ACCESS;
+    state.outputs.A = 0;
+    state.outputs.B = 0;
+
+    if (state.device) {
+      state.device.status = "disconnected";
+      state.device.label = "未接続";
+      state.device.safeState = "DISCONNECTED";
+      state.device.simulation = false;
+    }
+  }
+
+  if (deviceClient) {
+    deviceClient.connected = false;
+    deviceClient.simulation = false;
+  }
+
+  render();
+}
+
 function handleClick(event) {
   const actionTarget = event.target.closest("[data-action]");
   const switchTarget = event.target.closest("[data-switch-key]");
@@ -1432,6 +1461,12 @@ async function runAction(action, target) {
       audioManager.playTone("critical", true);
       showModal("Access Codeが違います", "BOOTH同梱のREADMEに記載されたAccess Codeを入力してください。");
     }
+    return;
+  }
+
+  if (!isAccessGranted()) {
+    await safeZero();
+    returnToAccessScreen();
     return;
   }
 
@@ -1478,12 +1513,20 @@ async function runAction(action, target) {
   }
 
   if (action === "go-channel-test") {
+    if (!isAccessGranted()) {
+      returnToAccessScreen();
+      return;
+    }
     state.phase = PHASE.CHANNEL_TEST;
     render();
     return;
   }
 
   if (action === "go-rule-setup") {
+    if (!isAccessGranted()) {
+      returnToAccessScreen();
+      return;
+    }
     if (!areChannelsTested()) {
       showModal("テスト未完了", "チャンネルA/Bのテストを完了してください。");
       return;
@@ -1494,6 +1537,10 @@ async function runAction(action, target) {
   }
 
   if (action === "back-channel-test") {
+    if (!isAccessGranted()) {
+      returnToAccessScreen();
+      return;
+    }
     state.phase = PHASE.CHANNEL_TEST;
     render();
     return;
@@ -1521,6 +1568,10 @@ async function runAction(action, target) {
   }
 
   if (action === "start-game") {
+    if (!isAccessGranted()) {
+      returnToAccessScreen();
+      return;
+    }
     startGame();
     return;
   }
@@ -1546,11 +1597,19 @@ async function runAction(action, target) {
   }
 
   if (action === "restart-game") {
+    if (!isAccessGranted()) {
+      returnToAccessScreen();
+      return;
+    }
     startGame();
     return;
   }
 
   if (action === "back-rule-setup") {
+    if (!isAccessGranted()) {
+      returnToAccessScreen();
+      return;
+    }
     await safeZero();
     state.phase = PHASE.RULE_SETUP;
     render();
@@ -1564,7 +1623,22 @@ async function runAction(action, target) {
 
   if (action === "clear-safe") {
     await safeZero();
+
+    if (!isAccessGranted()) {
+      returnToAccessScreen();
+      return;
+    }
+
     safeLockReason = "";
+
+    if (deviceClient && deviceClient.simulation) {
+      state.device.safeState = "SIMULATION";
+    } else if (state.device.status === "connected") {
+      state.device.safeState = "CONNECTED";
+    } else {
+      state.device.safeState = "DISCONNECTED";
+    }
+
     state.phase = deviceClient && deviceClient.connected ? PHASE.CHANNEL_TEST : PHASE.CONNECT;
     render();
     return;
@@ -1572,6 +1646,12 @@ async function runAction(action, target) {
 
   if (action === "go-connect") {
     await safeZero();
+
+    if (!isAccessGranted()) {
+      returnToAccessScreen();
+      return;
+    }
+
     state.phase = PHASE.CONNECT;
     render();
     return;
@@ -2204,15 +2284,23 @@ async function safeZero() {
 function safeStop(reason) {
   safeLockReason = reason || "安全停止しました";
   logLocal(`安全停止：${safeLockReason}`);
-  state.phase = PHASE.SAFE_LOCKED;
-  activeTestChannel = null;
+
   state.outputs.A = 0;
   state.outputs.B = 0;
+  activeTestChannel = null;
 
   if (state.game) {
     state.game.eventPulse = null;
   }
 
+  if (!isAccessGranted()) {
+    safeZero().catch(() => {});
+    state.phase = PHASE.ACCESS;
+    render();
+    return;
+  }
+
+  state.phase = PHASE.SAFE_LOCKED;
   updateDeviceStatus(state.device.status, state.device.label, "SAFE_STOP");
 
   if (audioManager) {
@@ -2258,9 +2346,21 @@ function registerGlobalEvents() {
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden" && state?.settings?.safety?.visibilityStop) {
-      safeStop("画面が非表示になりました");
+    if (document.visibilityState !== "hidden") {
+      return;
     }
+
+    if (!state?.settings?.safety?.visibilityStop) {
+      return;
+    }
+
+    if (!isAccessGranted()) {
+      safeZero().catch(() => {});
+      state.phase = PHASE.ACCESS;
+      return;
+    }
+
+    safeStop("画面が非表示になりました");
   });
 
   window.addEventListener("pagehide", () => {
@@ -2292,8 +2392,21 @@ async function registerServiceWorker() {
   }
 
   try {
-    const registration = await navigator.serviceWorker.register("./sw.js");
-    await registration.update();
+    const registrations = await navigator.serviceWorker.getRegistrations();
+
+    for (const registration of registrations) {
+      await registration.unregister();
+    }
+
+    if (window.caches && typeof window.caches.keys === "function") {
+      const keys = await window.caches.keys();
+
+      for (const key of keys) {
+        await window.caches.delete(key);
+      }
+    }
+
+    console.info("開発中のためService Workerを解除しました");
   } catch (error) {
     console.warn(error);
   }
