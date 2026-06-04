@@ -255,6 +255,7 @@ function makeInitialState() {
       status: "disconnected",
       label: "未接続",
       safeState: "DISCONNECTED",
+      simulation: false,
       lastError: "",
     },
     game: makeFreshGame(settings),
@@ -365,6 +366,7 @@ class CompatibleDeviceClient {
     this.service = null;
     this.characteristic = null;
     this.connected = false;
+    this.simulation = false;
     this.lastWriteMs = 0;
     this.lastPayload = "";
   }
@@ -374,6 +376,8 @@ class CompatibleDeviceClient {
   }
 
   async connectKnown() {
+    this.simulation = false;
+
     if (!this.isSupported()) {
       throw new Error("このブラウザはWeb Bluetoothに対応していません");
     }
@@ -393,6 +397,8 @@ class CompatibleDeviceClient {
   }
 
   async requestPreferred() {
+    this.simulation = false;
+
     if (!this.isSupported()) {
       throw new Error("このブラウザはWeb Bluetoothに対応していません");
     }
@@ -406,6 +412,8 @@ class CompatibleDeviceClient {
   }
 
   async requestManual() {
+    this.simulation = false;
+
     if (!this.isSupported()) {
       throw new Error("このブラウザはWeb Bluetoothに対応していません");
     }
@@ -418,10 +426,31 @@ class CompatibleDeviceClient {
     await this.connectToDevice(device);
   }
 
+  async connectSimulation() {
+    await this.disconnect();
+
+    this.device = null;
+    this.server = null;
+    this.service = null;
+    this.characteristic = null;
+    this.connected = true;
+    this.simulation = true;
+    this.lastPayload = "";
+
+    state.device.simulation = true;
+    updateDeviceStatus("connected", "低周波デバイスなし確認モード", "SIMULATION");
+
+    logLocal("低周波デバイスなし確認モードを開始しました");
+  }
+
   async connectToDevice(device) {
     this.device = device;
+    this.simulation = false;
+
     this.device.addEventListener("gattserverdisconnected", () => {
       this.connected = false;
+      this.simulation = false;
+      state.device.simulation = false;
       updateDeviceStatus("disconnected", "切断", "DISCONNECTED");
       safeStop("刺激デバイスが切断されました");
     });
@@ -431,8 +460,10 @@ class CompatibleDeviceClient {
     this.service = await this.server.getPrimaryService(DEVICE_SERVICE_UUID);
     this.characteristic = await this.service.getCharacteristic(DEVICE_CHAR_UUID);
     this.connected = true;
+    this.simulation = false;
     this.lastPayload = "";
 
+    state.device.simulation = false;
     updateDeviceStatus("connected", this.device.name || "接続済み", "CONNECTED");
 
     await this.sendInit();
@@ -453,10 +484,20 @@ class CompatibleDeviceClient {
     }
 
     this.connected = false;
+    this.simulation = false;
+
+    if (state && state.device) {
+      state.device.simulation = false;
+    }
+
     updateDeviceStatus("disconnected", "未接続", "DISCONNECTED");
   }
 
   async sendInit() {
+    if (this.simulation) {
+      return;
+    }
+
     if (!this.connected || !this.characteristic) {
       return;
     }
@@ -502,7 +543,7 @@ class CompatibleDeviceClient {
   }
 
   async sendOutputs(outputA, outputB, force = false) {
-    if (!this.connected || !this.characteristic) {
+    if (!this.connected) {
       return;
     }
 
@@ -514,12 +555,25 @@ class CompatibleDeviceClient {
       return;
     }
 
+    if (this.simulation) {
+      this.lastWriteMs = current;
+      return;
+    }
+
+    if (!this.characteristic) {
+      return;
+    }
+
     const payload = this.makePayload(outputA, outputB);
     await this.writePayload(payload, force);
     this.lastWriteMs = current;
   }
 
   async writePayload(payload, force = false) {
+    if (this.simulation) {
+      return;
+    }
+
     if (!this.characteristic) {
       return;
     }
@@ -541,6 +595,10 @@ class CompatibleDeviceClient {
   }
 
   async sendZeroRepeated() {
+    if (this.simulation) {
+      return;
+    }
+
     const repeat = clampInt(state?.settings?.safety?.zeroSendRepeat || 4, 1, 10);
 
     for (let i = 0; i < repeat; i += 1) {
@@ -685,6 +743,10 @@ function updateDeviceStatus(status, label, safeState) {
 }
 
 function statusDot(status, safeState) {
+  if (safeState === "SIMULATION") {
+    return `<span class="dot safe">●</span>確認モード`;
+  }
+
   if (safeState === "SAFE_STOP") {
     return `<span class="dot safe">●</span>安全停止`;
   }
@@ -868,6 +930,7 @@ function renderDisclaimer() {
 function renderConnect() {
   const supported = navigator.bluetooth ? "対応" : "非対応";
   const connected = deviceClient && deviceClient.connected;
+  const simulation = Boolean(deviceClient && deviceClient.connected && deviceClient.simulation);
 
   view.innerHTML = `
     <section class="screen">
@@ -876,22 +939,31 @@ function renderConnect() {
       <section class="card">
         <h2 class="section-title">接続状態 <small>Web Bluetooth</small></h2>
         ${renderMessageBox(
-          connected
-            ? `刺激デバイスに接続しています\n${state.device.label}`
-            : `刺激デバイスを接続してください\n対応状況：${supported}`,
+          simulation
+            ? `低周波デバイスなし確認モードです\n画面・音声・ゲーム進行のみを確認できます`
+            : connected
+              ? `刺激デバイスに接続しています\n${state.device.label}`
+              : `刺激デバイスを接続してください\n対応状況：${supported}`,
           connected ? "win" : "normal"
         )}
 
         <div class="grid two" style="margin-top: 16px;">
           <button class="btn primary big" data-action="connect-known">かんたん接続</button>
-          <button class="btn ghost big" data-action="connect-preferred">ID:47Lから探す</button>
+          <button class="btn ghost big" data-action="connect-preferred">推奨IDから探す</button>
           <button class="btn ghost big" data-action="connect-manual">手動で探す</button>
           <button class="btn danger big" data-action="disconnect-device">切断</button>
         </div>
 
+        <div class="btn-row" style="margin-top: 12px;">
+          <button class="btn ghost" data-action="connect-simulation" style="min-height: 36px; padding: 0 14px; font-size: 12px;">
+            低周波デバイスなし確認モード
+          </button>
+        </div>
+
         <p class="help">
           かんたん接続は、過去にこのサイトへ許可した対応デバイスへ再接続します。<br>
-          初回または見つからない場合は「ID:47Lから探す」または「手動で探す」を使用してください。
+          初回または見つからない場合は「推奨IDから探す」または「手動で探す」を使用してください。<br>
+          低周波デバイスなし確認モードでは、実機へ送信せず、画面・音声・ゲーム進行のみを確認できます。
         </p>
       </section>
 
@@ -1382,6 +1454,11 @@ async function runAction(action, target) {
     return;
   }
 
+  if (action === "connect-simulation") {
+    await connectWithMode("simulation");
+    return;
+  }
+
   if (action === "disconnect-device") {
     await safeZero();
     if (deviceClient) {
@@ -1501,13 +1578,22 @@ async function connectWithMode(mode) {
     if (mode === "known") {
       await deviceClient.connectKnown();
     } else if (mode === "preferred") {
+      logLocal("推奨IDの刺激デバイスを検索します");
       await deviceClient.requestPreferred();
-    } else {
+    } else if (mode === "manual") {
       await deviceClient.requestManual();
+    } else if (mode === "simulation") {
+      await deviceClient.connectSimulation();
     }
 
     audioManager.playTone("win", true);
-    audioManager.speak("刺激デバイスに接続しました。チャンネルテストへ進んでください。", true);
+
+    if (mode === "simulation") {
+      audioManager.speak("低周波デバイスなし確認モードを開始しました。画面と音声のみで確認できます。", true);
+    } else {
+      audioManager.speak("刺激デバイスに接続しました。チャンネルテストへ進んでください。", true);
+    }
+
     render();
   } catch (error) {
     updateDeviceStatus("disconnected", "未接続", "DISCONNECTED");
@@ -1915,7 +2001,6 @@ function finishByCharge() {
 
 function startFinalSettlement(winnerId, loserId, reason) {
   const game = state.game;
-  const loser = getPlayer(loserId);
   const rules = state.settings.rules;
 
   game.status = GAME_STATUS.FINAL_COUNTDOWN;
