@@ -45,8 +45,8 @@ const GAME_STATUS = {
   SETTLEMENT_COUNTDOWN: "SETTLEMENT_COUNTDOWN",
   SETTLEMENT_PULSE: "SETTLEMENT_PULSE",
   ROUND_END_HOLD: "ROUND_END_HOLD",
-  FINAL_COUNTDOWN: "FINAL_COUNTDOWN",
-  FINAL_PULSE: "FINAL_PULSE",
+  FINAL_RESULT_COUNTDOWN: "FINAL_RESULT_COUNTDOWN",
+  FINAL_RESULT_PULSE: "FINAL_RESULT_PULSE",
   FINISHED: "FINISHED",
 };
 
@@ -116,6 +116,10 @@ const DEFAULT_SETTINGS = {
     finalSettlementCountdownMs: 3000,
     finalSettlementBonusPercent: 8,
     finalSettlementDurationMs: 2000,
+    introHoldMs: 900,
+    messageHoldMs: 1800,
+    stimMessageHoldMs: 1600,
+    noticeMessageHoldMs: 1400,
   },
   audio: {
     soundEnabled: true,
@@ -144,6 +148,7 @@ let state = null;
 let deviceClient = null;
 let audioManager = null;
 let outputTimer = null;
+let stateMachineTimer = null;
 let renderTimer = null;
 let diceAnimationTimers = new Map();
 let previousGaugeValues = new Map();
@@ -151,6 +156,8 @@ let localLog = [];
 let activeTestChannel = null;
 let safeLockReason = "";
 let paused = false;
+let lastStateMachineStatus = "";
+let lastSpeechKey = "";
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -299,10 +306,12 @@ function makeFreshGame(settings) {
     dice: {
       p1: null,
       p2: null,
+      last: null,
     },
     diceFaces: {
       p1: [],
       p2: [],
+      last: [],
     },
     lastDiceOwnerId: null,
     lastLoserId: null,
@@ -426,11 +435,12 @@ function header(title, subtitle = "", options = {}) {
 
       <div class="header-actions">
         <div class="status-strip">
+          ${options.showRotateChip ? `<div class="pill rotate-chip">縦画面推奨</div>` : ""}
           <div class="pill">
             低周波デバイス
             ${statusDot(state.device.status, state.device.safeState)}
           </div>
-          <div class="pill">
+          <div class="pill" data-output-pill>
             A ${formatPercent(state.outputs.A)} / B ${formatPercent(state.outputs.B)}
           </div>
           ${options.showMenuChip ? `<button class="btn chip" data-action="go-rule-setup">設定</button>` : ""}
@@ -735,7 +745,7 @@ function renderDiceDebtPlaying() {
 
   view.innerHTML = `
     <section class="screen">
-      ${header(game?.title || "ゲーム中", game?.message || "", { showMenuChip: true })}
+      ${header(game?.title || "ゲーム中", game?.message || "", { showRotateChip: true, showMenuChip: true })}
 
       <div class="battle-main">
         <div class="desktop-hud play-layout">
@@ -820,7 +830,7 @@ function renderBattlePlayerCard(player, options = {}) {
 
       <div class="player-battle-meta">
         <span>Limit ${formatPercent(limit)}</span>
-        <span>${pulsing ? "継続出力 ON" : "継続出力 OFF"}</span>
+        <span data-output-state="${escapeHtml(player.id)}">${pulsing ? "継続出力 ON" : "継続出力 OFF"}</span>
       </div>
     </section>
   `;
@@ -843,8 +853,8 @@ function renderMiniHud(player, options = {}) {
         <span class="mini-turn">${active ? "TURN" : "WAIT"}</span>
       </div>
       <div class="mini-line">
-        <span>${escapeHtml(debtLabel)} <strong>${Math.round(charge)}</strong></span>
-        <span>OUT <strong>${Math.round(output)}</strong></span>
+        <span>${escapeHtml(debtLabel)} <strong data-player-charge="${escapeHtml(player.id)}">${Math.round(charge)}</strong></span>
+        <span>OUT <strong data-player-output="${escapeHtml(player.id)}">${Math.round(output)}</strong></span>
       </div>
       <div class="mini-gauges">
         ${renderGauge(`mini-charge-${player.id}`, charge, "charge mini", player)}
@@ -893,7 +903,7 @@ function renderRoundLabel(game) {
     return "ROUND";
   }
 
-  if (game.status === GAME_STATUS.FINAL_COUNTDOWN || game.status === GAME_STATUS.FINAL_PULSE) {
+  if (game.status === GAME_STATUS.FINAL_RESULT_COUNTDOWN || game.status === GAME_STATUS.FINAL_RESULT_PULSE) {
     return "FINAL";
   }
 
@@ -952,11 +962,11 @@ function renderPhaseHint(game) {
     return `<div class="message-advance-hint" data-phase-hint>ダイス演出中...</div>`;
   }
 
-  if (game.status === GAME_STATUS.SETTLEMENT_PULSE || game.status === GAME_STATUS.FINAL_PULSE) {
+  if (game.status === GAME_STATUS.SETTLEMENT_PULSE || game.status === GAME_STATUS.FINAL_RESULT_PULSE) {
     return `<div class="message-advance-hint ready" data-phase-hint>精算中</div>`;
   }
 
-  if (game.status === GAME_STATUS.SETTLEMENT_COUNTDOWN || game.status === GAME_STATUS.FINAL_COUNTDOWN) {
+  if (game.status === GAME_STATUS.SETTLEMENT_COUNTDOWN || game.status === GAME_STATUS.FINAL_RESULT_COUNTDOWN) {
     return `<div class="message-advance-hint ready" data-phase-hint>カウントダウン中</div>`;
   }
 
@@ -968,7 +978,7 @@ function renderMessageAdvanceHint(game) {
     return "";
   }
 
-  return `<div class="message-advance-hint ready">タップ / クリックで次へ</div>`;
+  return `<div class="message-advance-hint ready">自動進行します / タップでスキップ</div>`;
 }
 
 function isMessageAdvanceReady(game) {
@@ -1052,7 +1062,7 @@ function applyDiceRollingClass() {
     target.classList.add("rolling");
   });
 
-  const key = `${game.id}:${game.status}:${game.lastDiceOwnerId}:${game.phaseUntilMs}:${JSON.stringify(game.diceFaces || {})}`;
+  const key = `${game.id}:${game.status}:${game.lastDiceOwnerId}:${game.phaseUntilMs}`;
 
   clearDiceAnimationTimersExcept(key);
 
@@ -1296,8 +1306,8 @@ function isPlayerActive(playerId) {
   if (
     game.status === GAME_STATUS.SETTLEMENT_COUNTDOWN ||
     game.status === GAME_STATUS.SETTLEMENT_PULSE ||
-    game.status === GAME_STATUS.FINAL_COUNTDOWN ||
-    game.status === GAME_STATUS.FINAL_PULSE
+    game.status === GAME_STATUS.FINAL_RESULT_COUNTDOWN ||
+    game.status === GAME_STATUS.FINAL_RESULT_PULSE
   ) {
     return playerId === game.lastLoserId || playerId === game.pendingRoundResult?.loserId;
   }
@@ -1327,6 +1337,36 @@ function getCurrentRollPlayerId() {
   }
 
   return null;
+}
+
+function setPhaseTimer(game, durationMs) {
+  game.phaseUntilMs = nowMs() + clampInt(durationMs, 0, 30000);
+}
+
+function phaseElapsed(game) {
+  if (!game || !game.phaseUntilMs) {
+    return true;
+  }
+
+  return nowMs() >= Number(game.phaseUntilMs);
+}
+
+function getMessageHoldMs(tone) {
+  const rules = state.settings.rules;
+
+  if (tone === "stim") {
+    return clampInt(rules.stimMessageHoldMs || 1600, 300, 6000);
+  }
+
+  if (tone === "notice") {
+    return clampInt(rules.noticeMessageHoldMs || 1400, 300, 6000);
+  }
+
+  return clampInt(rules.messageHoldMs || 1800, 300, 6000);
+}
+
+function uiIntroMs() {
+  return clampInt(state.settings.rules.introHoldMs || 900, 300, 4000);
 }
 
 class CompatibleDeviceClient {
@@ -1627,7 +1667,7 @@ class AudioManager {
     let type = "sine";
 
     if (tone === "roll") {
-      frequency = 740;
+      frequency = 740 + Math.random() * 80;
       duration = 0.045;
       type = "square";
     } else if (tone === "dice-set") {
@@ -1727,6 +1767,8 @@ function resetPlayersForGame() {
 function startGame() {
   saveSettings();
   paused = false;
+  lastStateMachineStatus = "";
+  lastSpeechKey = "";
   resetPlayersForGame();
   state.game = makeFreshGame(state.settings);
   state.game.status = GAME_STATUS.WAIT_P1;
@@ -1738,7 +1780,7 @@ function startGame() {
 
   logLocal("ゲーム開始");
   audioManager.playTone("notice");
-  audioManager.speak(state.game.speechText, true);
+  speakGameOnce("start", state.game.speechText, true);
   render();
 }
 
@@ -1776,64 +1818,18 @@ function rollDiceFor(playerId) {
 
   game.status = status;
   game.lastDiceOwnerId = playerId;
-  game.phaseUntilMs = nowMs() + clampInt(state.settings.ui.diceAnimationMs, 300, 2000);
+  game.phaseUntilMs = null;
+  setPhaseTimer(game, state.settings.ui.diceAnimationMs);
   game.message = `${player.name} ダイスロール！`;
   game.speechText = `${player.name}、ダイスロール。`;
   game.messageTone = "normal";
 
   audioManager.playTone("roll");
-  audioManager.speak(game.speechText);
+  speakGameOnce(`${status}:${game.round}`, game.speechText);
   render();
-
-  setTimeout(() => {
-    const value = randomDiceValue();
-    game.diceFaces[playerId] = [value];
-
-    if (playerId === "p1") {
-      game.dice.p1 = value;
-      game.status = GAME_STATUS.WAIT_P2;
-      game.lastDiceOwnerId = null;
-      game.phaseUntilMs = null;
-      game.message = `${player.name} の出目は ${value}！\n${state.settings.players.p2.name}がダイスを振ってください`;
-      game.speechText = `${player.name}の出目は${value}。${state.settings.players.p2.name}がダイスを振ってください。`;
-      game.messageTone = "normal";
-      logLocal(`${player.name} 出目 ${value}`);
-      audioManager.playTone("dice-set");
-      audioManager.speak(game.speechText);
-      render();
-      return;
-    }
-
-    game.dice.p2 = value;
-    game.lastDiceOwnerId = null;
-    game.phaseUntilMs = null;
-    logLocal(`${player.name} 出目 ${value}`);
-    audioManager.playTone("dice-set");
-    prepareRoundRevealIntro();
-  }, clampInt(state.settings.ui.diceAnimationMs, 300, 2000));
 }
 
-function prepareRoundRevealIntro() {
-  const game = state.game;
-  const p1 = getPlayer("p1");
-  const p2 = getPlayer("p2");
-  const p1Value = Number(game.dice.p1 || 0);
-  const p2Value = Number(game.dice.p2 || 0);
-
-  game.status = GAME_STATUS.ROUND_REVEAL_INTRO;
-  game.message = `${p1.name} ${p1Value}　vs　${p2.name} ${p2Value}`;
-  game.speechText = `${p1.name}${p1Value}。${p2.name}${p2Value}。`;
-  game.messageTone = "notice";
-  audioManager.playTone("notice");
-  audioManager.speak(game.speechText);
-  render();
-
-  setTimeout(() => {
-    prepareRoundResultFull();
-  }, 1000);
-}
-
-function prepareRoundResultFull() {
+function createDiceRoundResult() {
   const game = state.game;
   const rules = state.settings.rules;
   const p1 = getPlayer("p1");
@@ -1841,33 +1837,22 @@ function prepareRoundResultFull() {
   const p1Value = Number(game.dice.p1 || 0);
   const p2Value = Number(game.dice.p2 || 0);
 
-  game.status = GAME_STATUS.ROUND_REVEAL_FULL;
-
   if (p1Value === p2Value) {
     const delta = clamp(Number(rules.drawCharge || 0), 0, 100);
 
-    game.pendingRoundResult = {
+    return {
       draw: true,
       winnerId: null,
       loserId: null,
       chargeDelta: delta,
       diff: 0,
+      tone: "stim",
+      messageIntro: `${p1.name} ${p1Value}　vs　${p2.name} ${p2Value}`,
+      speechIntro: `${p1.name}${p1Value}。${p2.name}${p2Value}。`,
+      messageFull: `${p1Value} 対 ${p2Value}\nあいこ！\n両者にCharge +${Math.round(delta)}`,
+      speechFull: `あいこ。両者にチャージ${Math.round(delta)}。`,
       applied: false,
     };
-
-    game.lastLoserId = null;
-    game.lastWinnerId = null;
-    game.lastChargeDelta = delta;
-    game.lastDiff = 0;
-    game.message = `${p1Value} 対 ${p2Value}\nあいこ！\n両者にCharge +${Math.round(delta)}`;
-    game.speechText = `あいこ。両者にチャージ${Math.round(delta)}。`;
-    game.messageTone = "stim";
-    logLocal(`あいこ：両者 Charge +${Math.round(delta)}`);
-    audioManager.playTone("stim");
-    audioManager.speak(game.speechText);
-    applyPendingRoundResult();
-    render();
-    return;
   }
 
   const p1Wins = p1Value > p2Value;
@@ -1876,32 +1861,24 @@ function prepareRoundResultFull() {
   const diff = Math.abs(p1Value - p2Value);
   const delta = clamp(diff * Number(rules.chargeMultiplier || 5), 0, 100);
 
-  game.pendingRoundResult = {
+  return {
     draw: false,
     winnerId: winner.id,
     loserId: loser.id,
     chargeDelta: delta,
     diff,
+    tone: "stim",
+    messageIntro: `${p1.name} ${p1Value}　vs　${p2.name} ${p2Value}`,
+    speechIntro: `${p1.name}${p1Value}。${p2.name}${p2Value}。`,
+    messageFull: `${winner.name} の勝ち！\n差分 ${diff}\n${loser.name}にCharge +${Math.round(delta)}`,
+    speechFull: `${winner.name}の勝ち。${loser.name}にチャージ${Math.round(delta)}。`,
     applied: false,
   };
-
-  game.lastLoserId = loser.id;
-  game.lastWinnerId = winner.id;
-  game.lastChargeDelta = delta;
-  game.lastDiff = diff;
-  game.message = `${winner.name} の勝ち！\n差分 ${diff}\n${loser.name}にCharge +${Math.round(delta)}`;
-  game.speechText = `${winner.name}の勝ち。${loser.name}にチャージ${Math.round(delta)}。`;
-  game.messageTone = "stim";
-
-  logLocal(`${winner.name}勝利：${loser.name} Charge +${Math.round(delta)}`);
-  audioManager.playTone("stim");
-  audioManager.speak(game.speechText);
-  applyPendingRoundResult();
-  render();
 }
 
-function applyPendingRoundResult() {
-  const result = state.game.pendingRoundResult;
+function applyPendingDiceRoundResult() {
+  const game = state.game;
+  const result = game.pendingRoundResult;
 
   if (!result || result.applied) {
     return;
@@ -1912,150 +1889,290 @@ function applyPendingRoundResult() {
     const p2 = getPlayer("p2");
     p1.charge = clamp(p1.charge + Number(result.chargeDelta || 0), 0, 100);
     p2.charge = clamp(p2.charge + Number(result.chargeDelta || 0), 0, 100);
+    logLocal(`あいこ：両者 Charge +${Math.round(result.chargeDelta)}`);
   } else {
     const loser = getPlayer(result.loserId);
+    const winner = getPlayer(result.winnerId);
     if (loser) {
       loser.charge = clamp(loser.charge + Number(result.chargeDelta || 0), 0, 100);
     }
+    logLocal(`${winner ? winner.name : "勝者"}勝利：${loser ? loser.name : "敗者"} Charge +${Math.round(result.chargeDelta)}`);
   }
 
   result.applied = true;
+  game.lastLoserId = result.loserId;
+  game.lastWinnerId = result.winnerId;
+  game.lastChargeDelta = result.chargeDelta;
+  game.lastDiff = result.diff;
 }
 
-function advanceMessage() {
+function updateDiceDebtStateMachine() {
+  if (!state || state.phase !== PHASE.PLAYING) {
+    return;
+  }
+
   const game = state.game;
 
-  if (!isMessageAdvanceReady(game) || paused) {
+  if (!game || game.status === GAME_STATUS.FINISHED) {
+    return;
+  }
+
+  if (paused) {
+    return;
+  }
+
+  if (lastStateMachineStatus !== game.status) {
+    lastStateMachineStatus = game.status;
+    forceRenderSoon();
+  }
+
+  if (game.status === GAME_STATUS.DICE_ROLLING_P1) {
+    if (phaseElapsed(game)) {
+      const value = randomDiceValue();
+      const player = getPlayer("p1");
+
+      game.dice.p1 = value;
+      game.dice.last = value;
+      game.diceFaces.p1 = [value];
+      game.diceFaces.last = [value];
+      game.lastDiceOwnerId = null;
+      game.status = GAME_STATUS.WAIT_P2;
+      game.message = `${player.name} の出目は ${value}！\n${state.settings.players.p2.name}がダイスを振ってください`;
+      game.speechText = `${player.name}の出目は${value}。${state.settings.players.p2.name}がダイスを振ってください。`;
+      game.messageTone = "normal";
+      game.phaseUntilMs = null;
+
+      logLocal(`${player.name} 出目 ${value}`);
+      audioManager.playTone("dice-set");
+      speakGameOnce(`p1-result:${game.round}`, game.speechText);
+      forceRenderSoon();
+    }
+    return;
+  }
+
+  if (game.status === GAME_STATUS.DICE_ROLLING_P2) {
+    if (phaseElapsed(game)) {
+      const value = randomDiceValue();
+      const player = getPlayer("p2");
+
+      game.dice.p2 = value;
+      game.dice.last = value;
+      game.diceFaces.p2 = [value];
+      game.diceFaces.last = [value];
+      game.lastDiceOwnerId = null;
+      game.pendingRoundResult = createDiceRoundResult();
+
+      const result = game.pendingRoundResult;
+      game.status = GAME_STATUS.ROUND_REVEAL_INTRO;
+      game.message = result.messageIntro;
+      game.speechText = result.speechIntro || result.messageIntro;
+      game.messageTone = result.tone || "stim";
+      setPhaseTimer(game, uiIntroMs());
+
+      logLocal(`${player.name} 出目 ${value}`);
+      audioManager.playTone("dice-set");
+      speakGameOnce(`intro:${game.round}`, game.speechText);
+      forceRenderSoon();
+    }
+    return;
+  }
+
+  if (game.status === GAME_STATUS.ROUND_REVEAL_INTRO) {
+    if (phaseElapsed(game)) {
+      applyPendingDiceRoundResult();
+
+      const result = game.pendingRoundResult || {};
+      game.status = GAME_STATUS.ROUND_REVEAL_FULL;
+      game.message = result.messageFull || "";
+      game.speechText = result.speechFull || "";
+      game.messageTone = result.tone || "stim";
+      setPhaseTimer(game, getMessageHoldMs(result.tone || "stim"));
+
+      audioManager.playTone("stim");
+      speakGameOnce(`full:${game.round}`, game.speechText);
+      forceRenderSoon();
+    }
     return;
   }
 
   if (game.status === GAME_STATUS.ROUND_REVEAL_FULL) {
-    if (!game.pendingRoundResult || game.pendingRoundResult.draw || !state.settings.rules.settlementStim) {
-      setRoundEndHold();
-      return;
-    }
+    if (phaseElapsed(game)) {
+      const result = game.pendingRoundResult || {};
 
-    startSettlementCountdown();
+      if (game.suddenDeath && result.winnerId) {
+        const winner = getPlayer(result.winnerId);
+        finishGame(result.winnerId, winner ? `サドンデス勝利：${winner.name} の勝ち` : "サドンデス勝利");
+        return;
+      }
+
+      if (result.draw && game.suddenDeath) {
+        game.status = GAME_STATUS.WAIT_P1;
+        game.dice = { p1: null, p2: null, last: null };
+        game.diceFaces = { p1: [], p2: [], last: [] };
+        game.lastDiceOwnerId = null;
+        game.pendingRoundResult = null;
+        game.message = "サドンデスあいこ！\nもう一度振ってください";
+        game.speechText = "あいこ。もう一度振ってください。";
+        game.messageTone = "notice";
+        game.phaseUntilMs = null;
+        audioManager.playTone("notice");
+        speakGameOnce(`sudden-draw:${game.round}`, game.speechText);
+        forceRenderSoon();
+        return;
+      }
+
+      if (result.loserId && state.settings.rules.settlementStim) {
+        startDiceSettlementCountdown();
+        return;
+      }
+
+      advanceDiceRound();
+    }
+    return;
+  }
+
+  if (game.status === GAME_STATUS.SETTLEMENT_COUNTDOWN) {
+    updateDiceSettlementCountdown();
+    return;
+  }
+
+  if (game.status === GAME_STATUS.SETTLEMENT_PULSE) {
+    updateDiceSettlementPulse();
     return;
   }
 
   if (game.status === GAME_STATUS.ROUND_END_HOLD) {
-    advanceRound();
+    if (phaseElapsed(game)) {
+      advanceDiceRound();
+    }
+    return;
+  }
+
+  if (game.status === GAME_STATUS.FINAL_RESULT_COUNTDOWN) {
+    updateFinalResultCountdown();
+    return;
+  }
+
+  if (game.status === GAME_STATUS.FINAL_RESULT_PULSE) {
+    updateFinalResultPulse();
   }
 }
 
-function startSettlementCountdown() {
+function startDiceSettlementCountdown() {
   const game = state.game;
+  const cfg = state.settings.rules;
   const loser = getPlayer(game.lastLoserId);
-
-  if (!loser) {
-    setRoundEndHold();
-    return;
-  }
 
   game.status = GAME_STATUS.SETTLEMENT_COUNTDOWN;
-  game.countdownUntilMs = nowMs() + clampInt(state.settings.rules.settlementCountdownMs, 1000, 10000);
+  game.countdownUntilMs = nowMs() + clampInt(cfg.settlementCountdownMs, 1000, 10000);
   game.settlementUntilMs = null;
   game.phaseUntilMs = null;
-  logLocal(`${loser.name} 精算カウント開始`);
-
-  updateSettlementCountdown();
-}
-
-function updateSettlementCountdown() {
-  const game = state.game;
-
-  if (game.status !== GAME_STATUS.SETTLEMENT_COUNTDOWN || paused) {
-    return;
-  }
-
-  const loser = getPlayer(game.lastLoserId);
-  const remain = Math.max(0, Number(game.countdownUntilMs || 0) - nowMs());
-  const sec = Math.ceil(remain / 1000);
 
   if (loser) {
-    game.message = `${loser.name} 精算まで ${sec}\nCharge +${Math.round(game.lastChargeDelta)}`;
-    game.speechText = String(sec);
+    game.message = `${loser.name} 精算まで 3\nCharge +${Math.round(game.lastChargeDelta || 0)}`;
+    game.speechText = "3";
     game.messageTone = "notice";
   }
 
+  logLocal(`${loser ? loser.name : "敗者"} 精算カウント開始`);
   audioManager.playTone("count");
-  audioManager.speak(game.speechText);
-  render();
-
-  if (remain <= 0) {
-    startSettlementPulse();
-    return;
-  }
-
-  setTimeout(updateSettlementCountdown, 250);
+  speakGameOnce(`settlement-count-start:${game.round}`, game.speechText);
+  forceRenderSoon();
 }
 
-function startSettlementPulse() {
+function updateDiceSettlementCountdown() {
   const game = state.game;
-  const rules = state.settings.rules;
+  const currentMs = nowMs();
+  const until = Number(game.countdownUntilMs || 0);
+  const remainMs = Math.max(0, until - currentMs);
+  const sec = Math.ceil(remainMs / 1000);
   const loser = getPlayer(game.lastLoserId);
 
-  if (!loser) {
-    setRoundEndHold();
+  if (loser) {
+    const nextMessage = `${loser.name} 精算まで ${sec}\nCharge +${Math.round(game.lastChargeDelta || 0)}`;
+    const nextSpeech = String(sec);
+
+    if (game.message !== nextMessage) {
+      game.message = nextMessage;
+      game.speechText = nextSpeech;
+      game.messageTone = "notice";
+      audioManager.playTone("count");
+      speakGameOnce(`settlement-count:${game.round}:${sec}`, nextSpeech);
+      forceRenderSoon();
+    }
+  }
+
+  if (currentMs >= until) {
+    game.status = GAME_STATUS.SETTLEMENT_PULSE;
+    game.settlementUntilMs = currentMs + clampInt(state.settings.rules.settlementDurationMs, 100, 5000);
+    game.phaseUntilMs = null;
+
+    safeZero().catch(() => {});
+
+    if (loser) {
+      game.message = `${loser.name} 精算！`;
+      game.speechText = "精算";
+      game.messageTone = "stim";
+    }
+
+    game.eventPulse = {
+      playerId: loser ? loser.id : null,
+      untilMs: game.settlementUntilMs,
+      bonusPercent: clamp(state.settings.rules.settlementBonusPercent, 0, 50),
+      minPercent: 0,
+      reason: "精算",
+    };
+
+    logLocal(`${loser ? loser.name : "敗者"} 精算開始`);
+    audioManager.playTone("critical");
+    speakGameOnce(`settlement-pulse:${game.round}`, game.speechText);
+    forceRenderSoon();
+  }
+}
+
+function updateDiceSettlementPulse() {
+  const game = state.game;
+  const loser = getPlayer(game.lastLoserId);
+  const until = Number(game.settlementUntilMs || 0);
+  const currentMs = nowMs();
+
+  if (loser && currentMs <= until) {
     return;
   }
 
-  game.status = GAME_STATUS.SETTLEMENT_PULSE;
-  game.settlementUntilMs = nowMs() + clampInt(rules.settlementDurationMs, 100, 5000);
-  game.eventPulse = {
-    playerId: loser.id,
-    untilMs: game.settlementUntilMs,
-    bonusPercent: clamp(rules.settlementBonusPercent, 0, 50),
-    minPercent: 0,
-    reason: "精算",
-  };
-  game.message = `${loser.name} 精算！`;
-  game.speechText = "精算";
-  game.messageTone = "stim";
+  if (loser) {
+    const channel = getChannelForPlayer(loser.id);
+    state.outputs[channel] = 0;
+  }
 
-  logLocal(`${loser.name} 精算開始`);
-  audioManager.playTone("critical");
-  audioManager.speak(game.speechText);
-  render();
-
-  setTimeout(() => {
-    game.eventPulse = null;
-    setRoundEndHold();
-  }, clampInt(rules.settlementDurationMs, 100, 5000));
-}
-
-function setRoundEndHold() {
-  const game = state.game;
-
-  game.status = GAME_STATUS.ROUND_END_HOLD;
   game.eventPulse = null;
-  game.countdownUntilMs = null;
-  game.settlementUntilMs = null;
-  game.message = `ROUND ${game.round} 終了\nタップ / クリックで次へ`;
-  game.speechText = `ラウンド${game.round}終了。`;
-  game.messageTone = "normal";
-  audioManager.playTone("notice");
-  audioManager.speak(game.speechText);
-  render();
+  game.status = GAME_STATUS.ROUND_END_HOLD;
+  game.message = "精算完了！";
+  game.speechText = "精算完了";
+  game.messageTone = "stim";
+  setPhaseTimer(game, getMessageHoldMs("stim"));
+
+  logLocal("精算完了");
+  audioManager.playTone("stim");
+  speakGameOnce(`settlement-end:${game.round}`, game.speechText);
+  forceRenderSoon();
 }
 
-function advanceRound() {
+function advanceDiceRound() {
   const game = state.game;
   const currentRound = Number(game.round || 1);
   const maxRounds = Number(game.maxRounds || state.settings.rules.rounds || 10);
 
   if (currentRound >= maxRounds) {
-    finishByCharge();
+    startFinalResultFlow();
     return;
   }
 
   game.round = currentRound + 1;
   game.status = GAME_STATUS.WAIT_P1;
-  game.dice.p1 = null;
-  game.dice.p2 = null;
-  game.diceFaces.p1 = [];
-  game.diceFaces.p2 = [];
+  game.dice = { p1: null, p2: null, last: null };
+  game.diceFaces = { p1: [], p2: [], last: [] };
+  game.lastDiceOwnerId = null;
   game.lastLoserId = null;
   game.lastWinnerId = null;
   game.lastChargeDelta = 0;
@@ -2070,11 +2187,11 @@ function advanceRound() {
   game.messageTone = "normal";
 
   audioManager.playTone("notice");
-  audioManager.speak(game.speechText);
-  render();
+  speakGameOnce(`round:${game.round}`, game.speechText);
+  forceRenderSoon();
 }
 
-function finishByCharge() {
+function startFinalResultFlow() {
   const game = state.game;
   const p1 = getPlayer("p1");
   const p2 = getPlayer("p2");
@@ -2083,46 +2200,49 @@ function finishByCharge() {
     game.suddenDeath = true;
     game.round += 1;
     game.status = GAME_STATUS.WAIT_P1;
-    game.dice.p1 = null;
-    game.dice.p2 = null;
-    game.diceFaces.p1 = [];
-    game.diceFaces.p2 = [];
+    game.dice = { p1: null, p2: null, last: null };
+    game.diceFaces = { p1: [], p2: [], last: [] };
+    game.lastDiceOwnerId = null;
+    game.pendingRoundResult = null;
     game.message = `同点！\nサドンデス：${p1.name}がダイスを振ってください`;
     game.speechText = `同点。サドンデス。${p1.name}がダイスを振ってください。`;
     game.messageTone = "critical";
+    game.phaseUntilMs = null;
+
     audioManager.playTone("critical");
-    audioManager.speak(game.speechText);
-    render();
+    speakGameOnce(`sudden:${game.round}`, game.speechText);
+    forceRenderSoon();
     return;
   }
 
   const winner = p1.charge < p2.charge ? p1 : p2;
   const loser = p1.charge < p2.charge ? p2 : p1;
 
-  startFinalSettlement(winner.id, loser.id, `規定ラウンド終了：${winner.name} の勝利`);
+  startFinalResultCountdown(winner.id, loser.id, `規定ラウンド終了：${winner.name} の勝利`);
 }
 
-function startFinalSettlement(winnerId, loserId, reason) {
+function startFinalResultCountdown(winnerId, loserId, reason) {
   const game = state.game;
-  const rules = state.settings.rules;
 
-  game.status = GAME_STATUS.FINAL_COUNTDOWN;
+  game.status = GAME_STATUS.FINAL_RESULT_COUNTDOWN;
   game.pendingRoundResult = {
     winnerId,
     loserId,
     reason,
   };
   game.lastLoserId = loserId;
-  game.countdownUntilMs = nowMs() + clampInt(rules.finalSettlementCountdownMs, 1000, 10000);
-  logLocal("最終精算カウント開始");
+  game.countdownUntilMs = nowMs() + clampInt(state.settings.rules.finalSettlementCountdownMs, 1000, 10000);
+  game.settlementUntilMs = null;
+  game.phaseUntilMs = null;
 
-  updateFinalCountdown();
+  logLocal("最終精算カウント開始");
+  updateFinalResultCountdown();
 }
 
-function updateFinalCountdown() {
+function updateFinalResultCountdown() {
   const game = state.game;
 
-  if (game.status !== GAME_STATUS.FINAL_COUNTDOWN || paused) {
+  if (game.status !== GAME_STATUS.FINAL_RESULT_COUNTDOWN || paused) {
     return;
   }
 
@@ -2130,35 +2250,36 @@ function updateFinalCountdown() {
   const remain = Math.max(0, Number(game.countdownUntilMs || 0) - nowMs());
   const sec = Math.ceil(remain / 1000);
 
-  game.message = loser ? `${loser.name} 最終精算まで ${sec}` : `最終精算まで ${sec}`;
-  game.speechText = String(sec);
-  game.messageTone = "notice";
+  const nextMessage = loser ? `${loser.name} 最終精算まで ${sec}` : `最終精算まで ${sec}`;
+  const nextSpeech = String(sec);
 
-  audioManager.playTone("count");
-  audioManager.speak(game.speechText);
-  render();
+  if (game.message !== nextMessage) {
+    game.message = nextMessage;
+    game.speechText = nextSpeech;
+    game.messageTone = "notice";
 
-  if (remain <= 0) {
-    startFinalPulse();
-    return;
+    audioManager.playTone("count");
+    speakGameOnce(`final-count:${sec}`, nextSpeech);
+    forceRenderSoon();
   }
 
-  setTimeout(updateFinalCountdown, 250);
+  if (remain <= 0) {
+    startFinalResultPulse();
+  }
 }
 
-function startFinalPulse() {
+function startFinalResultPulse() {
   const game = state.game;
-  const rules = state.settings.rules;
   const loser = getPlayer(game.pendingRoundResult.loserId);
 
-  game.status = GAME_STATUS.FINAL_PULSE;
-  game.settlementUntilMs = nowMs() + clampInt(rules.finalSettlementDurationMs, 100, 6000);
+  game.status = GAME_STATUS.FINAL_RESULT_PULSE;
+  game.settlementUntilMs = nowMs() + clampInt(state.settings.rules.finalSettlementDurationMs, 100, 6000);
 
   if (loser) {
     game.eventPulse = {
       playerId: loser.id,
       untilMs: game.settlementUntilMs,
-      bonusPercent: clamp(rules.finalSettlementBonusPercent, 0, 60),
+      bonusPercent: clamp(state.settings.rules.finalSettlementBonusPercent, 0, 60),
       minPercent: 0,
       reason: "最終精算",
     };
@@ -2169,14 +2290,25 @@ function startFinalPulse() {
 
   game.speechText = "最終精算";
   game.messageTone = "critical";
-  audioManager.playTone("critical");
-  audioManager.speak(game.speechText);
-  render();
 
-  setTimeout(() => {
-    game.eventPulse = null;
-    finishGame(game.pendingRoundResult.winnerId, game.pendingRoundResult.reason);
-  }, clampInt(rules.finalSettlementDurationMs, 100, 6000));
+  audioManager.playTone("critical");
+  speakGameOnce("final-pulse", game.speechText);
+  forceRenderSoon();
+}
+
+function updateFinalResultPulse() {
+  const game = state.game;
+
+  if (game.status !== GAME_STATUS.FINAL_RESULT_PULSE) {
+    return;
+  }
+
+  if (nowMs() <= Number(game.settlementUntilMs || 0)) {
+    return;
+  }
+
+  game.eventPulse = null;
+  finishGame(game.pendingRoundResult.winnerId, game.pendingRoundResult.reason);
 }
 
 function finishGame(winnerId, reason) {
@@ -2194,7 +2326,7 @@ function finishGame(winnerId, reason) {
   logLocal(game.reason);
   audioManager.playTone("win", true);
   audioManager.speak(game.reason, true);
-  render();
+  forceRenderSoon();
 }
 
 function giveUp(playerId) {
@@ -2232,26 +2364,33 @@ function computeRequestedOutputs() {
   const game = state.game;
   const rules = state.settings.rules;
 
-  if (rules.continuousStim) {
+  if (rules.continuousStim && game.status !== GAME_STATUS.SETTLEMENT_PULSE && game.status !== GAME_STATUS.FINAL_RESULT_PULSE) {
     const period = Math.max(1, Number(rules.continuousOnMs) + Number(rules.continuousOffMs));
-    const phase = nowMs() % period;
-    const isOn = phase < Number(rules.continuousOnMs);
+    const cycle = nowMs() % period;
+    const isOn = cycle < Number(rules.continuousOnMs);
 
     if (isOn) {
       for (const player of Object.values(state.settings.players)) {
+        const charge = getPlayerCharge(player.id);
         const channel = getChannelForPlayer(player.id);
-        outputs[channel] = Math.max(outputs[channel], calculateOutputFromCharge(player.id));
+
+        if (charge > 0.01) {
+          outputs[channel] = Math.max(outputs[channel], calculateOutputFromCharge(player.id));
+        }
       }
     }
   }
 
   if (game.eventPulse && nowMs() <= Number(game.eventPulse.untilMs || 0)) {
     const event = game.eventPulse;
-    const channel = getChannelForPlayer(event.playerId);
-    outputs[channel] = Math.max(
-      outputs[channel],
-      calculateEventOutput(event.playerId, event.bonusPercent, event.minPercent)
-    );
+
+    if (event.playerId) {
+      const channel = getChannelForPlayer(event.playerId);
+      outputs[channel] = Math.max(
+        outputs[channel],
+        calculateEventOutput(event.playerId, event.bonusPercent, event.minPercent)
+      );
+    }
   }
 
   outputs.A = clamp(outputs.A, 0, getChannelSettings("A").limit);
@@ -2289,28 +2428,53 @@ async function outputLoop() {
 function updateLiveOutputLabels() {
   for (const player of Object.values(state.settings.players)) {
     const output = getPlayerOutput(player.id);
+    const charge = getPlayerCharge(player.id);
+
     document.querySelectorAll(`[data-player-output="${CSS.escape(player.id)}"]`).forEach((el) => {
       el.textContent = formatPercent(output);
     });
+
+    document.querySelectorAll(`[data-player-charge="${CSS.escape(player.id)}"]`).forEach((el) => {
+      el.textContent = String(Math.round(charge));
+    });
+
+    document.querySelectorAll(`[data-output-state="${CSS.escape(player.id)}"]`).forEach((el) => {
+      el.textContent = output > 0.01 ? "継続出力 ON" : "継続出力 OFF";
+    });
   }
 
-  document.querySelectorAll(".status-strip .pill").forEach((el) => {
-    if (el.textContent.includes("A ") && el.textContent.includes(" / B ")) {
-      el.textContent = `A ${formatPercent(state.outputs.A)} / B ${formatPercent(state.outputs.B)}`;
-    }
+  document.querySelectorAll("[data-output-pill]").forEach((el) => {
+    el.textContent = `A ${formatPercent(state.outputs.A)} / B ${formatPercent(state.outputs.B)}`;
   });
 
-  const outputA = document.querySelector(`[data-gauge-key="output-p1"]`);
-  const outputB = document.querySelector(`[data-gauge-key="output-p2"]`);
+  for (const player of Object.values(state.settings.players)) {
+    const output = getPlayerOutput(player.id);
+    const charge = getPlayerCharge(player.id);
 
-  if (outputA) {
-    outputA.dataset.gaugeValue = String(getPlayerOutput("p1"));
-    outputA.style.width = `${getPlayerOutput("p1")}%`;
-  }
+    const outputGauge = document.querySelector(`[data-gauge-key="output-${CSS.escape(player.id)}"]`);
+    const miniOutputGauge = document.querySelector(`[data-gauge-key="mini-output-${CSS.escape(player.id)}"]`);
+    const chargeGauge = document.querySelector(`[data-gauge-key="charge-${CSS.escape(player.id)}"]`);
+    const miniChargeGauge = document.querySelector(`[data-gauge-key="mini-charge-${CSS.escape(player.id)}"]`);
 
-  if (outputB) {
-    outputB.dataset.gaugeValue = String(getPlayerOutput("p2"));
-    outputB.style.width = `${getPlayerOutput("p2")}%`;
+    if (outputGauge) {
+      outputGauge.dataset.gaugeValue = String(output);
+      outputGauge.style.width = `${output}%`;
+    }
+
+    if (miniOutputGauge) {
+      miniOutputGauge.dataset.gaugeValue = String(output);
+      miniOutputGauge.style.width = `${output}%`;
+    }
+
+    if (chargeGauge) {
+      chargeGauge.dataset.gaugeValue = String(charge);
+      chargeGauge.style.width = `${charge}%`;
+    }
+
+    if (miniChargeGauge) {
+      miniChargeGauge.dataset.gaugeValue = String(charge);
+      miniChargeGauge.style.width = `${charge}%`;
+    }
   }
 }
 
@@ -2342,7 +2506,7 @@ function safeStop(reason) {
   if (!isAccessGranted()) {
     safeZero().catch(() => {});
     state.phase = PHASE.ACCESS;
-    render();
+    forceRenderSoon();
     return;
   }
 
@@ -2355,7 +2519,7 @@ function safeStop(reason) {
   }
 
   safeZero().catch(() => {});
-  render();
+  forceRenderSoon();
 }
 
 function returnToAccessScreen() {
@@ -2380,7 +2544,7 @@ function returnToAccessScreen() {
     deviceClient.simulation = false;
   }
 
-  render();
+  forceRenderSoon();
 }
 
 function showModal(title, message) {
@@ -2399,6 +2563,19 @@ function showModal(title, message) {
 function closeModal() {
   modalRoot.classList.add("hidden");
   modalRoot.innerHTML = "";
+}
+
+function speakGameOnce(key, text, force = false) {
+  if (!text) {
+    return;
+  }
+
+  if (!force && lastSpeechKey === key) {
+    return;
+  }
+
+  lastSpeechKey = key;
+  audioManager.speak(text, force);
 }
 
 function handleClick(event) {
@@ -2421,7 +2598,7 @@ function handleClick(event) {
   if (!actionTarget && messageAdvanceTarget) {
     const tagName = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
     if (tagName !== "button" && tagName !== "input" && tagName !== "select") {
-      advanceMessage();
+      advanceMessageNow();
     }
     return;
   }
@@ -2437,6 +2614,17 @@ function handleClick(event) {
   });
 }
 
+function advanceMessageNow() {
+  const game = state.game;
+
+  if (!isMessageAdvanceReady(game) || paused) {
+    return;
+  }
+
+  game.phaseUntilMs = nowMs() - 1;
+  updateDiceDebtStateMachine();
+}
+
 async function runAction(action, target) {
   await audioManager.unlock();
 
@@ -2447,7 +2635,7 @@ async function runAction(action, target) {
       state.phase = PHASE.DISCLAIMER;
       logLocal("Access Code認証完了");
       audioManager.playTone("win", true);
-      render();
+      forceRenderSoon();
     } else {
       audioManager.playTone("critical", true);
       showModal("Access Codeが違います", "BOOTH同梱のREADMEに記載されたAccess Codeを入力してください。");
@@ -2470,7 +2658,7 @@ async function runAction(action, target) {
     state.phase = PHASE.CONNECT;
     logLocal("安全確認に同意しました");
     audioManager.speak("安全確認に同意しました。低周波デバイスを接続してください。", true);
-    render();
+    forceRenderSoon();
     return;
   }
 
@@ -2499,13 +2687,13 @@ async function runAction(action, target) {
     if (deviceClient) {
       await deviceClient.disconnect();
     }
-    render();
+    forceRenderSoon();
     return;
   }
 
   if (action === "go-channel-test") {
     state.phase = PHASE.CHANNEL_TEST;
-    render();
+    forceRenderSoon();
     return;
   }
 
@@ -2516,13 +2704,13 @@ async function runAction(action, target) {
     }
     await safeZero();
     state.phase = PHASE.RULE_SETUP;
-    render();
+    forceRenderSoon();
     return;
   }
 
   if (action === "back-channel-test") {
     state.phase = PHASE.CHANNEL_TEST;
-    render();
+    forceRenderSoon();
     return;
   }
 
@@ -2533,7 +2721,7 @@ async function runAction(action, target) {
     logLocal(`${state.settings.channels[channel].label} テスト完了`);
     audioManager.playTone("win");
     audioManager.speak(`${state.settings.channels[channel].label}のテストを完了しました。`);
-    render();
+    forceRenderSoon();
     return;
   }
 
@@ -2575,7 +2763,7 @@ async function runAction(action, target) {
     } else {
       logLocal("再開");
     }
-    render();
+    forceRenderSoon();
     return;
   }
 
@@ -2587,7 +2775,7 @@ async function runAction(action, target) {
   if (action === "back-rule-setup") {
     await safeZero();
     state.phase = PHASE.RULE_SETUP;
-    render();
+    forceRenderSoon();
     return;
   }
 
@@ -2615,7 +2803,7 @@ async function runAction(action, target) {
     }
 
     state.phase = deviceClient && deviceClient.connected ? PHASE.CHANNEL_TEST : PHASE.CONNECT;
-    render();
+    forceRenderSoon();
     return;
   }
 
@@ -2628,7 +2816,7 @@ async function runAction(action, target) {
     }
 
     state.phase = PHASE.CONNECT;
-    render();
+    forceRenderSoon();
     return;
   }
 }
@@ -2658,12 +2846,12 @@ async function connectWithMode(mode) {
       audioManager.speak("低周波デバイスに接続しました。チャンネルテストへ進んでください。", true);
     }
 
-    render();
+    forceRenderSoon();
   } catch (error) {
     updateDeviceStatus("disconnected", "未接続", "DISCONNECTED");
     audioManager.playTone("critical", true);
     showModal("接続できませんでした", error.message || String(error));
-    render();
+    forceRenderSoon();
   }
 }
 
@@ -2683,7 +2871,7 @@ function handleSwitch(target) {
   }
 
   saveSettings();
-  render();
+  forceRenderSoon();
 }
 
 function handleInput(event) {
@@ -2722,7 +2910,7 @@ function handleChange(event) {
       player.name = String(input.value || playerId.toUpperCase()).trim().slice(0, 18) || playerId.toUpperCase();
       player.reading = player.name;
       saveSettings();
-      render();
+      forceRenderSoon();
     }
   }
 }
@@ -2870,6 +3058,18 @@ function startOutputLoop() {
   }, interval);
 }
 
+function startStateMachineLoop() {
+  clearInterval(stateMachineTimer);
+  stateMachineTimer = setInterval(() => {
+    try {
+      updateDiceDebtStateMachine();
+    } catch (error) {
+      console.error(error);
+      safeStop("ゲーム進行処理でエラーが発生しました");
+    }
+  }, 50);
+}
+
 function boot() {
   state = makeInitialState();
   deviceClient = new CompatibleDeviceClient();
@@ -2877,6 +3077,7 @@ function boot() {
 
   registerGlobalEvents();
   startOutputLoop();
+  startStateMachineLoop();
   registerServiceWorker();
 
   logLocal(`${PRODUCT_NAME} 起動`);
