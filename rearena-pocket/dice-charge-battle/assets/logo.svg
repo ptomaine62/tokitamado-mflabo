@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 360">
+  <rect width="960" height="360" rx="34" fill="#08090c"/>
+  <text x="480" y="150" text-anchor="middle"
+    font-family="system-ui, sans-serif"
+    font-size="78"
+    font-weight="900"
+    fill="#7dd3fc">DICE CHARGE</text>
+  <text x="480" y="245" text-anchor="middle"
+    font-family="system-ui, sans-serif"
+    font-size="84"
+    font-weight="900"
+    fill="#facc15">BATTLE</text>
+</svg>
