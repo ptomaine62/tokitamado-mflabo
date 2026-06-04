@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "dice-charge-battle-v0-1-0";
+const CACHE_NAME = "dice-charge-battle-v0-1-2";
 const CACHE_FILES = [
   "./",
   "./index.html",
@@ -40,12 +40,8 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) {
-        return cached;
-      }
-
-      return fetch(request).then((response) => {
+    fetch(request)
+      .then((response) => {
         const copy = response.clone();
 
         caches.open(CACHE_NAME).then((cache) => {
@@ -53,7 +49,15 @@ self.addEventListener("fetch", (event) => {
         });
 
         return response;
-      });
-    })
+      })
+      .catch(() => {
+        return caches.match(request).then((cached) => {
+          if (cached) {
+            return cached;
+          }
+
+          return caches.match("./");
+        });
+      })
   );
 });
