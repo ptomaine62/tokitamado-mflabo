@@ -1,0 +1,3 @@
+User-agent: *
+Disallow: /rearena-pocket/dice-charge-battle/
+Allow: /
