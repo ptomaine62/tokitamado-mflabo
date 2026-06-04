@@ -390,7 +390,7 @@ class CompatibleDeviceClient {
     const named = devices.filter((device) => String(device.name || "").startsWith(DEVICE_NAME_PREFIX));
 
     if (named.length === 0) {
-      throw new Error("許可済みの対応デバイスが見つかりません。手動で探してください。");
+      throw new Error("許可済みの対応低周波デバイスが見つかりません。手動で探してください。");
     }
 
     await this.connectToDevice(named[0]);
@@ -452,7 +452,7 @@ class CompatibleDeviceClient {
       this.simulation = false;
       state.device.simulation = false;
       updateDeviceStatus("disconnected", "切断", "DISCONNECTED");
-      safeStop("刺激デバイスが切断されました");
+      safeStop("低周波デバイスが切断されました");
     });
 
     updateDeviceStatus("reconnecting", "接続中", "RECONNECTING");
@@ -469,7 +469,7 @@ class CompatibleDeviceClient {
     await this.sendInit();
     await this.sendZeroRepeated();
 
-    logLocal("刺激デバイスに接続しました");
+    logLocal("低周波デバイスに接続しました");
   }
 
   async disconnect() {
@@ -773,7 +773,7 @@ function header(title, subtitle = "") {
       <div class="header-actions">
         <div class="status-strip">
           <div class="pill">
-            刺激デバイス
+            低周波デバイス
             ${statusDot(state.device.status, state.device.safeState)}
           </div>
           <div class="pill">
@@ -904,7 +904,7 @@ function renderDisclaimer() {
         <div class="brand-ja">安全確認と同意</div>
 
         <div class="notice danger">
-          本アプリは対応BLEデバイスのA/Bチャンネル出力を制御します。<br>
+          本アプリは対応低周波BLEデバイスのA/Bチャンネル出力を制御します。<br>
           必ず低い出力から確認し、体調不良・痛み・違和感・通信不安定がある場合は直ちに使用を中止してください。<br>
           画面が非表示になった場合、通信が切断された場合、または緊急停止が押された場合は出力を0%にします。
         </div>
@@ -934,7 +934,7 @@ function renderConnect() {
 
   view.innerHTML = `
     <section class="screen">
-      ${header(PRODUCT_NAME, "刺激デバイス接続")}
+      ${header(PRODUCT_NAME, "低周波デバイス接続")}
 
       <section class="card">
         <h2 class="section-title">接続状態 <small>Web Bluetooth</small></h2>
@@ -942,8 +942,8 @@ function renderConnect() {
           simulation
             ? `低周波デバイスなし確認モードです\n画面・音声・ゲーム進行のみを確認できます`
             : connected
-              ? `刺激デバイスに接続しています\n${state.device.label}`
-              : `刺激デバイスを接続してください\n対応状況：${supported}`,
+              ? `低周波デバイスに接続しています\n${state.device.label}`
+              : `低周波デバイスを接続してください\n対応状況：${supported}`,
           connected ? "win" : "normal"
         )}
 
@@ -954,7 +954,16 @@ function renderConnect() {
           <button class="btn danger big" data-action="disconnect-device">切断</button>
         </div>
 
-        <div class="btn-row" style="margin-top: 12px;">
+        <div class="card soft" style="margin-top: 16px; padding: 14px;">
+          <h3 class="section-title" style="font-size: 15px; margin-bottom: 8px;">
+            実機なし確認 <small>開発・動作確認用</small>
+          </h3>
+
+          <p class="help" style="margin-top: 0;">
+            低周波デバイスに接続せず、画面・音声・ゲーム進行のみを確認します。<br>
+            A/Bチャンネルの出力値は画面上に表示されますが、実機には送信されません。
+          </p>
+
           <button class="btn ghost" data-action="connect-simulation" style="min-height: 36px; padding: 0 14px; font-size: 12px;">
             低周波デバイスなし確認モード
           </button>
@@ -962,15 +971,15 @@ function renderConnect() {
 
         <p class="help">
           かんたん接続は、過去にこのサイトへ許可した対応デバイスへ再接続します。<br>
-          初回または見つからない場合は「推奨IDから探す」または「手動で探す」を使用してください。<br>
-          低周波デバイスなし確認モードでは、実機へ送信せず、画面・音声・ゲーム進行のみを確認できます。
+          初回または見つからない場合は「推奨IDから探す」または「手動で探す」を使用してください。
         </p>
       </section>
 
       <section class="card">
         <h2 class="section-title">次の手順</h2>
         <p class="help">
-          接続後、チャンネルA/Bの個別テストを行います。テストが終わるまでゲーム開始はロックされます。
+          接続後、チャンネルA/Bの個別テストを行います。テストが終わるまでゲーム開始はロックされます。<br>
+          低周波デバイスなし確認モードでも、画面上の出力ゲージとゲーム進行を確認できます。
         </p>
         <button class="btn primary wide" data-action="go-channel-test" ${connected ? "" : "disabled"}>A/Bチャンネル設定へ</button>
       </section>
@@ -1434,7 +1443,7 @@ async function runAction(action, target) {
     }
     state.phase = PHASE.CONNECT;
     logLocal("安全確認に同意しました");
-    audioManager.speak("安全確認に同意しました。刺激デバイスを接続してください。", true);
+    audioManager.speak("安全確認に同意しました。低周波デバイスを接続してください。", true);
     render();
     return;
   }
@@ -1578,7 +1587,7 @@ async function connectWithMode(mode) {
     if (mode === "known") {
       await deviceClient.connectKnown();
     } else if (mode === "preferred") {
-      logLocal("推奨IDの刺激デバイスを検索します");
+      logLocal("推奨IDの低周波デバイスを検索します");
       await deviceClient.requestPreferred();
     } else if (mode === "manual") {
       await deviceClient.requestManual();
@@ -1591,7 +1600,7 @@ async function connectWithMode(mode) {
     if (mode === "simulation") {
       audioManager.speak("低周波デバイスなし確認モードを開始しました。画面と音声のみで確認できます。", true);
     } else {
-      audioManager.speak("刺激デバイスに接続しました。チャンネルテストへ進んでください。", true);
+      audioManager.speak("低周波デバイスに接続しました。チャンネルテストへ進んでください。", true);
     }
 
     render();
@@ -2283,7 +2292,8 @@ async function registerServiceWorker() {
   }
 
   try {
-    await navigator.serviceWorker.register("./sw.js");
+    const registration = await navigator.serviceWorker.register("./sw.js");
+    await registration.update();
   } catch (error) {
     console.warn(error);
   }
