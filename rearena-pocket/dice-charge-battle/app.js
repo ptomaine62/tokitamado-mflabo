@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-04";
+const VERSION = "20260605-05";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -180,6 +180,7 @@ function bindDocumentEvents() {
   document.addEventListener("pointerdown", onPointerDown);
   document.addEventListener("pointerup", stopChannelTest);
   document.addEventListener("pointercancel", stopChannelTest);
+  document.addEventListener("touchmove", preventPlayingRubberBand, { passive: false });
 
   if ("speechSynthesis" in window) {
     window.speechSynthesis.onvoiceschanged = () => {
@@ -200,6 +201,20 @@ function bindSafetyEvents() {
 
   window.addEventListener("pagehide", emergencyZeroOnly);
   window.addEventListener("beforeunload", emergencyZeroOnly);
+}
+
+function preventPlayingRubberBand(event) {
+  if (state.phase !== PHASE.PLAYING) {
+    return;
+  }
+
+  const target = event.target;
+
+  if (target && target.closest && target.closest("button,input,select,textarea,a")) {
+    return;
+  }
+
+  event.preventDefault();
 }
 
 async function onClick(event) {
@@ -353,11 +368,20 @@ function setPhase(phase) {
     applyRotation();
   }
 
+  updateViewportLock();
   render();
   scrollTopSoon();
 }
 
+function updateViewportLock() {
+  const locked = state.phase === PHASE.PLAYING;
+
+  document.documentElement.classList.toggle("playing-lock", locked);
+  document.body.classList.toggle("playing-lock", locked);
+}
+
 function render() {
+  updateViewportLock();
   applyRotation();
 
   if (state.phase === PHASE.ACCESS) renderAccess();
