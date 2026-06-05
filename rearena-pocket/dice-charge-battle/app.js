@@ -1,13 +1,14 @@
 "use strict";
 
-const VERSION = "20260605-05";
-const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
+const VERSION = "20260605-06";
+const PRODUCT_FAMILY = :contentReference[oaicite:0]{index=0}T";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
 const DEVICE_NAME_PREFIX = "ID:47L";
 
 const BLE_SERVICE_UUID = "0000180c-0000-1000-8000-00805f9b34fb";
-const BLE_CHAR_UUID = "0000150a-0000-1000-8000-00805f9b34fb";
+const BLE_WRITE_CHAR_UUID = "0000150a-0000-1000-8000-00805f9b34fb";
+const BLE_NOTIFY_CHAR_UUID = "0000150b-0000-1000-8000-00805f9b34fb";
 
 const PHASE = {
   ACCESS: "ACCESS",
@@ -120,10 +121,14 @@ const state = {
     connected: false,
     name: "",
     bluetoothDevice: null,
-    characteristic: null,
+    writeCharacteristic: null,
+    notifyCharacteristic: null,
     sending: false,
     lastSendAt: 0,
-    lastPacket: ""
+    lastPacket: "",
+    sequence: 1,
+    lastActualA: 0,
+    lastActualB: 0
   },
   ui: {
     rotated: false,
@@ -1058,13 +1063,52 @@ async function attachDevice(device) {
 
   const server = await device.gatt.connect();
   const service = await server.getPrimaryService(BLE_SERVICE_UUID);
-  state.device.characteristic = await service.getCharacteristic(BLE_CHAR_UUID);
+
+  state.device.writeCharacteristic = await service.getCharacteristic(BLE_WRITE_CHAR_UUID);
+
+  try {
+    state.device.notifyCharacteristic = await service.getCharacteristic(BLE_NOTIFY_CHAR_UUID);
+    await state.device.notifyCharacteristic.startNotifications();
+    state.device.notifyCharacteristic.addEventListener("characteristicvaluechanged", handleCoyoteNotify);
+    log("Notifyを開始しました");
+  } catch (error) {
+    state.device.notifyCharacteristic = null;
+    log(`Notify開始失敗: ${error.message}`);
+  }
+
   state.device.mode = "ble";
   state.device.connected = true;
+  state.device.sequence = 1;
+  state.device.lastActualA = 0;
+  state.device.lastActualB = 0;
 
+  await sendCoyoteInit();
   await sendZeroRepeated();
+
   log(`低周波デバイス接続: ${state.device.name}`);
   setPhase(PHASE.CHANNEL_TEST);
+}
+
+function handleCoyoteNotify(event) {
+  const value = event.target?.value;
+
+  if (!value || value.byteLength < 1) {
+    return;
+  }
+
+  const bytes = [];
+
+  for (let i = 0; i < value.byteLength; i++) {
+    bytes.push(value.getUint8(i));
+  }
+
+  if (bytes[0] === 0xB1 && bytes.length >= 4) {
+    state.device.lastActualA = bytes[2];
+    state.device.lastActualB = bytes[3];
+    return;
+  }
+
+  log(`BLE Notify: ${bytesToHex(bytes)}`);
 }
 
 function handleDeviceDisconnected() {
@@ -1072,7 +1116,8 @@ function handleDeviceDisconnected() {
   state.device.connected = false;
   state.device.name = "";
   state.device.bluetoothDevice = null;
-  state.device.characteristic = null;
+  state.device.writeCharacteristic = null;
+  state.device.notifyCharacteristic = null;
   stopAllOutputLocal();
 
   if (state.phase === PHASE.PLAYING) {
@@ -1100,6 +1145,13 @@ async function disconnectDevice(goConnect) {
   await sendZeroRepeated();
 
   try {
+    if (state.device.notifyCharacteristic) {
+      state.device.notifyCharacteristic.removeEventListener("characteristicvaluechanged", handleCoyoteNotify);
+      await state.device.notifyCharacteristic.stopNotifications();
+    }
+  } catch {}
+
+  try {
     if (state.device.bluetoothDevice?.gatt?.connected) {
       state.device.bluetoothDevice.gatt.disconnect();
     }
@@ -1109,7 +1161,8 @@ async function disconnectDevice(goConnect) {
   state.device.connected = false;
   state.device.name = "";
   state.device.bluetoothDevice = null;
-  state.device.characteristic = null;
+  state.device.writeCharacteristic = null;
+  state.device.notifyCharacteristic = null;
   log("切断しました");
 
   if (goConnect) {
@@ -1692,7 +1745,7 @@ function limitChannel(ch, value) {
 async function sendOutputThrottled(A, B) {
   const now = Date.now();
 
-  if (now - state.device.lastSendAt < 50) {
+  if (now - state.device.lastSendAt < 100) {
     return;
   }
 
@@ -1717,14 +1770,14 @@ async function sendOutputPacket(A, B) {
     return;
   }
 
-  if (state.device.mode !== "ble" || !state.device.characteristic || state.device.sending) {
+  if (state.device.mode !== "ble" || !state.device.writeCharacteristic || state.device.sending) {
     return;
   }
 
   state.device.sending = true;
 
   try {
-    await state.device.characteristic.writeValueWithoutResponse(buildPacket(A, B));
+    await writeBle(buildB0PacketV3(A, B));
   } catch (error) {
     state.device.sending = false;
     safeStop(`BLE送信エラー: ${error.message}`);
@@ -1734,19 +1787,137 @@ async function sendOutputPacket(A, B) {
   state.device.sending = false;
 }
 
-function buildPacket(A, B) {
-  const a = intClamp((clamp(A, 0, 100) / 100) * 255, 0, 255);
-  const b = intClamp((clamp(B, 0, 100) / 100) * 255, 0, 255);
-  const width = intClamp(Math.max(state.settings.channels.A.pulseWidth, state.settings.channels.B.pulseWidth), 1, 60);
-  const freq = intClamp(Math.max(state.settings.channels.A.frequency, state.settings.channels.B.frequency), 1, 200);
-  const bytes = [0xB0, 0x0F, a, b];
+async function sendCoyoteInit() {
+  if (state.device.mode !== "ble" || !state.device.writeCharacteristic) {
+    return;
+  }
 
-  for (let i = 0; i < 4; i++) bytes.push(width);
-  for (let i = 0; i < 4; i++) bytes.push(freq);
-  for (let i = 0; i < 4; i++) bytes.push(width);
-  for (let i = 0; i < 4; i++) bytes.push(freq);
+  await writeBle(buildBfPacket());
+  await sleep(80);
+  await writeBle(buildB0PacketV3(0, 0));
+  await sleep(80);
+  await writeBle(buildB0PacketV3(0, 0));
+  log("COYOTE初期化BF/B0を送信しました");
+}
 
-  return new Uint8Array(bytes);
+function buildBfPacket() {
+  const aLimit = percentToCoyoteStrength(state.settings.channels.A.limit);
+  const bLimit = percentToCoyoteStrength(state.settings.channels.B.limit);
+  const freqBalanceA = 100;
+  const freqBalanceB = 100;
+  const strengthBalanceA = 100;
+  const strengthBalanceB = 100;
+
+  return new Uint8Array([
+    0xBF,
+    aLimit,
+    bLimit,
+    freqBalanceA,
+    freqBalanceB,
+    strengthBalanceA,
+    strengthBalanceB
+  ]);
+}
+
+function buildB0PacketV3(A, B) {
+  const safeA = clamp(A, 0, 100);
+  const safeB = clamp(B, 0, 100);
+  const strengthA = percentToCoyoteStrength(safeA);
+  const strengthB = percentToCoyoteStrength(safeB);
+  const sequence = nextCoyoteSequence();
+  const modeAbsoluteBoth = 0x0F;
+  const sequenceAndMode = ((sequence & 0x0F) << 4) | modeAbsoluteBoth;
+
+  const aFreq = buildFrequencyFrame(state.settings.channels.A.frequency, safeA);
+  const aWave = buildWaveStrengthFrame(safeA);
+  const bFreq = buildFrequencyFrame(state.settings.channels.B.frequency, safeB);
+  const bWave = buildWaveStrengthFrame(safeB);
+
+  return new Uint8Array([
+    0xB0,
+    sequenceAndMode,
+    strengthA,
+    strengthB,
+    ...aFreq,
+    ...aWave,
+    ...bFreq,
+    ...bWave
+  ]);
+}
+
+function buildFrequencyFrame(frequency, percentValue) {
+  if (percentValue <= 0) {
+    return [10, 10, 10, 10];
+  }
+
+  const encoded = encodeCoyoteFrequency(frequency);
+  return [encoded, encoded, encoded, encoded];
+}
+
+function buildWaveStrengthFrame(percentValue) {
+  if (percentValue <= 0) {
+    return [0, 0, 0, 0];
+  }
+
+  const peak = clamp(Math.round(percentValue), 1, 100);
+  const v1 = clamp(Math.round(peak * 0.55), 1, 100);
+  const v2 = clamp(Math.round(peak * 0.75), 1, 100);
+  const v3 = clamp(Math.round(peak * 0.9), 1, 100);
+  const v4 = clamp(Math.round(peak), 1, 100);
+
+  return [v1, v2, v3, v4];
+}
+
+function percentToCoyoteStrength(percentValue) {
+  return intClamp((clamp(percentValue, 0, 100) / 100) * 200, 0, 200);
+}
+
+function encodeCoyoteFrequency(inputFrequency) {
+  const value = intClamp(inputFrequency, 10, 1000);
+
+  if (value <= 100) {
+    return value;
+  }
+
+  if (value <= 600) {
+    return intClamp((value - 100) / 5 + 100, 101, 200);
+  }
+
+  return intClamp((value - 600) / 10 + 200, 201, 240);
+}
+
+function nextCoyoteSequence() {
+  const seq = state.device.sequence;
+
+  state.device.sequence += 1;
+
+  if (state.device.sequence > 15) {
+    state.device.sequence = 1;
+  }
+
+  return seq;
+}
+
+async function writeBle(packet) {
+  if (!state.device.writeCharacteristic) {
+    return;
+  }
+
+  try {
+    if (typeof state.device.writeCharacteristic.writeValueWithoutResponse === "function") {
+      await state.device.writeCharacteristic.writeValueWithoutResponse(packet);
+      return;
+    }
+  } catch (error) {
+    log(`writeValueWithoutResponse失敗: ${error.message}`);
+  }
+
+  if (typeof state.device.writeCharacteristic.writeValue === "function") {
+    await state.device.writeCharacteristic.writeValue(packet);
+    return;
+  }
+
+  throw new Error("BLE書き込みAPIが利用できません");
 }
 
 async function sendZeroRepeated() {
@@ -1754,7 +1925,7 @@ async function sendZeroRepeated() {
 
   for (let i = 0; i < 5; i++) {
     await sendOutputPacket(0, 0);
-    await sleep(35);
+    await sleep(45);
   }
 
   updateLiveDom();
@@ -2150,4 +2321,10 @@ function speak(text) {
 
 function testSpeech() {
   speak("DICE CHARGE BATTLE 音声テストです。");
+}
+
+function bytesToHex(bytes) {
+  return bytes
+    .map((byte) => byte.toString(16).padStart(2, "0").toUpperCase())
+    .join(" ");
 }
