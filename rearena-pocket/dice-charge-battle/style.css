@@ -50,6 +50,31 @@ body {
   overscroll-behavior: none;
 }
 
+html.playing-lock,
+body.playing-lock {
+  width: 100%;
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body.playing-lock {
+  position: fixed;
+  inset: 0;
+}
+
+body.playing-lock .app-shell {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+body.playing-lock .playing-screen {
+  height: calc(100dvh - var(--safe-top) - var(--safe-bottom));
+  min-height: 0;
+  overflow: hidden;
+}
+
 button,
 input,
 select {
