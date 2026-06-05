@@ -1,7 +1,7 @@
 {
   "name": "SHOCKiG REARENA POCKET - DICE CHARGE BATTLE",
   "short_name": "DICE CHARGE",
-  "description": "SHOCKiG REARENA POCKET DICE CHARGE BATTLE",
+  "description": "SHOCKiG REARENA POCKET - DICE CHARGE BATTLE",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
