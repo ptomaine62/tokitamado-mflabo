@@ -1,13 +1,16 @@
 "use strict";
 
-const VERSION = "20260605-hp-02";
+const VERSION = "20260605-hp-03-coyote";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "HP CRASH BATTLE";
 const ACCESS_CODE = "HCB-MFLABO-202606";
-const DEVICE_NAME_PREFIX = "ID:47L";
+const DEVICE_NAME_PREFIX = "47L";
 
 const BLE_SERVICE_UUID = "0000180c-0000-1000-8000-00805f9b34fb";
 const BLE_CHAR_UUID = "0000150a-0000-1000-8000-00805f9b34fb";
+const BLE_NOTIFY_UUID = "0000150b-0000-1000-8000-00805f9b34fb";
+
+const COYOTE_INIT_PACKET = new Uint8Array([0xBF, 200, 200, 128, 128, 128, 128]);
 
 const PHASE = {
   ACCESS: "ACCESS",
@@ -60,8 +63,8 @@ const DEFAULT_SETTINGS = {
     p2: { name: "P2", channel: "B", colorIndex: 2 }
   },
   channels: {
-    A: { limit: 30, testPercent: 5, pulseWidth: 10, frequency: 100, tested: false },
-    B: { limit: 30, testPercent: 5, pulseWidth: 10, frequency: 100, tested: false }
+    A: { limit: 30, testPercent: 5, pulseWidth: 20, frequency: 100, tested: false },
+    B: { limit: 30, testPercent: 5, pulseWidth: 20, frequency: 100, tested: false }
   },
   hpCrash: {
     initialHp: 100,
@@ -155,9 +158,12 @@ const state = {
     name: "",
     bluetoothDevice: null,
     characteristic: null,
+    notifyCharacteristic: null,
     sending: false,
     lastSendAt: 0,
-    lastPacket: ""
+    lastPacket: "",
+    writeMode: "auto",
+    notifyLog: []
   },
   ui: {
     rotated: false,
@@ -197,6 +203,7 @@ function boot() {
     state.phase = PHASE.CONNECT;
   }
 
+  normalizeSavedSettings();
   bindDocumentEvents();
   bindSafetyEvents();
   loadVoices();
@@ -205,6 +212,23 @@ function boot() {
   render();
   scrollTopSoon();
   log("HP CRASH BATTLE 起動");
+}
+
+function normalizeSavedSettings() {
+  for (const ch of ["A", "B"]) {
+    const cfg = state.settings.channels[ch];
+
+    if (!cfg) {
+      continue;
+    }
+
+    cfg.limit = intClamp(cfg.limit, 0, 100);
+    cfg.testPercent = intClamp(cfg.testPercent, 0, 100);
+    cfg.pulseWidth = intClamp(cfg.pulseWidth, 1, 100);
+    cfg.frequency = intClamp(cfg.frequency, 10, 240);
+  }
+
+  saveSettings();
 }
 
 function bindDocumentEvents() {
@@ -457,7 +481,7 @@ function deviceStatusHtml() {
   }
 
   if (state.device.connected) {
-    return `<span class="dot connected">●</span>低周波デバイス接続`;
+    return `<span class="dot connected">●</span>COYOTE接続`;
   }
 
   return `<span class="dot disconnected">●</span>未接続`;
@@ -501,7 +525,7 @@ function renderDisclaimer() {
       ${header(PRODUCT_NAME, "WARNING & DISCLAIMER")}
       <div class="card warning-card">
         <h2>安全確認と同意</h2>
-        <p>本アプリは低周波BLEデバイスを制御します。必ず低い出力から開始してください。</p>
+        <p>本アプリはCOYOTE BLEデバイスを制御します。必ず低い出力から開始してください。</p>
         <ul class="safety-list">
           <li>体調不良、違和感、痛み、しびれ等を感じた場合は直ちに使用を中止してください。</li>
           <li>心臓疾患、医療機器、ペースメーカー等に関係する方は使用しないでください。</li>
@@ -522,14 +546,14 @@ function renderDisclaimer() {
 function renderConnect() {
   view.innerHTML = `
     <section class="screen">
-      ${header(PRODUCT_NAME, "低周波デバイス接続")}
+      ${header(PRODUCT_NAME, "COYOTE接続")}
       <div class="grid two">
         <div class="card">
           <h2>接続</h2>
-          <p class="muted">Web Bluetoothで低周波デバイスへ直接接続します。HTTPS環境と対応ブラウザが必要です。</p>
+          <p class="muted">Web BluetoothでCOYOTE V3へ直接接続します。HTTPS環境と対応ブラウザが必要です。</p>
           <div class="button-stack">
             <button class="btn primary wide stable-btn" data-action="connect-known">かんたん接続</button>
-            <button class="btn cyan wide stable-btn" data-action="connect-preferred">推奨IDから探す</button>
+            <button class="btn cyan wide stable-btn" data-action="connect-preferred">47Lから探す</button>
             <button class="btn ghost wide stable-btn" data-action="connect-manual">手動で探す</button>
             <button class="btn danger wide stable-btn" data-action="disconnect">切断</button>
           </div>
@@ -537,7 +561,7 @@ function renderConnect() {
         <div class="card">
           <h2>確認モード</h2>
           <p class="muted">BLE送信なしで、画面・音・進行・出力ゲージだけ確認できます。</p>
-          <button class="btn orange wide stable-btn" data-action="connect-simulation">低周波デバイスなし確認モード</button>
+          <button class="btn orange wide stable-btn" data-action="connect-simulation">COYOTEなし確認モード</button>
         </div>
       </div>
       ${renderLog()}
@@ -558,6 +582,7 @@ function renderChannelTest() {
       </div>
       <div class="card">
         <p class="muted">テストボタンは押している間だけ出力します。離す・キャンセル・画面外へ出ると0%になります。</p>
+        <p class="muted">COYOTE V3向けに、強度は0〜200、波形周波数は10〜240、波形強度は0〜100へ変換して送信します。</p>
         <button class="btn primary wide stable-btn" data-action="go-rule-setup" ${A.tested && B.tested ? "" : "disabled"}>
           A/Bテスト完了：ゲーム設定へ
         </button>
@@ -574,8 +599,8 @@ function renderChannelCard(ch, cfg, title) {
       <div class="form-grid">
         ${rangeInput(`limit-${ch}`, "出力リミット", cfg.limit, 0, 100, 1, "%")}
         ${rangeInput(`test-${ch}`, "テストの強さ", cfg.testPercent, 0, 100, 1, "%")}
-        ${rangeInput(`width-${ch}`, "パルス幅", cfg.pulseWidth, 1, 60, 1, "μs")}
-        ${rangeInput(`freq-${ch}`, "周波数", cfg.frequency, 1, 200, 1, "Hz")}
+        ${rangeInput(`width-${ch}`, "波形強度", cfg.pulseWidth, 1, 100, 1, "")}
+        ${rangeInput(`freq-${ch}`, "波形周波数", cfg.frequency, 10, 240, 1, "")}
       </div>
       <button class="btn big ${cfg.tested ? "safe" : "primary"} stable-btn" data-test-channel="${ch}">
         ${cfg.tested ? "✓ テスト済み" : "押してテスト"}
@@ -1025,7 +1050,7 @@ async function connectKnown() {
     const device = devices.find((d) => (d.name || "").startsWith(DEVICE_NAME_PREFIX)) || devices[0];
 
     if (!device) {
-      toast("過去に許可した低周波デバイスがありません");
+      toast("過去に許可したCOYOTEがありません");
       return;
     }
 
@@ -1054,7 +1079,7 @@ async function connectPreferred() {
     await attachDevice(device);
   } catch (error) {
     if (!String(error.message || "").includes("User cancelled")) {
-      handleConnectError(`推奨ID接続失敗: ${error.message}`);
+      handleConnectError(`47L接続失敗: ${error.message}`);
     }
   }
 }
@@ -1096,7 +1121,7 @@ async function attachDevice(device) {
   await disconnectDevice(false);
 
   state.device.bluetoothDevice = device;
-  state.device.name = device.name || "低周波デバイス";
+  state.device.name = device.name || "COYOTE";
 
   device.addEventListener("gattserverdisconnected", () => {
     handleDeviceDisconnected();
@@ -1105,12 +1130,45 @@ async function attachDevice(device) {
   const server = await device.gatt.connect();
   const service = await server.getPrimaryService(BLE_SERVICE_UUID);
   state.device.characteristic = await service.getCharacteristic(BLE_CHAR_UUID);
+
+  try {
+    state.device.notifyCharacteristic = await service.getCharacteristic(BLE_NOTIFY_UUID);
+    state.device.notifyCharacteristic.addEventListener("characteristicvaluechanged", onCoyoteNotify);
+    await state.device.notifyCharacteristic.startNotifications();
+    log("COYOTE Notify開始");
+  } catch (error) {
+    state.device.notifyCharacteristic = null;
+    log(`Notify未使用: ${error.message}`);
+  }
+
   state.device.mode = "ble";
   state.device.connected = true;
+  state.device.writeMode = "auto";
 
+  await sendCoyoteInit();
+  await sleep(80);
   await sendZeroRepeated();
-  log(`低周波デバイス接続: ${state.device.name}`);
+
+  log(`COYOTE接続: ${state.device.name}`);
   setPhase(PHASE.CHANNEL_TEST);
+}
+
+function onCoyoteNotify(event) {
+  const value = event.target.value;
+
+  if (!value) {
+    return;
+  }
+
+  const bytes = [];
+
+  for (let i = 0; i < value.byteLength; i++) {
+    bytes.push(value.getUint8(i));
+  }
+
+  const hex = bytes.map((v) => v.toString(16).padStart(2, "0").toUpperCase()).join(" ");
+  state.device.notifyLog.push(hex);
+  state.device.notifyLog = state.device.notifyLog.slice(-20);
 }
 
 function handleDeviceDisconnected() {
@@ -1119,13 +1177,15 @@ function handleDeviceDisconnected() {
   state.device.name = "";
   state.device.bluetoothDevice = null;
   state.device.characteristic = null;
+  state.device.notifyCharacteristic = null;
+  state.device.writeMode = "auto";
   stopAllOutputLocal();
 
   if (state.phase === PHASE.PLAYING) {
-    safeStop("低周波デバイスが切断されました");
+    safeStop("COYOTEが切断されました");
   } else {
-    log("低周波デバイスが切断されました");
-    toast("低周波デバイスが切断されました");
+    log("COYOTEが切断されました");
+    toast("COYOTEが切断されました");
     render();
   }
 }
@@ -1137,7 +1197,7 @@ function connectSimulation() {
 
   state.device.mode = "simulation";
   state.device.connected = true;
-  state.device.name = "低周波デバイスなし確認モード";
+  state.device.name = "COYOTEなし確認モード";
   log("確認モードで開始");
   setPhase(PHASE.CHANNEL_TEST);
 }
@@ -1146,6 +1206,12 @@ async function disconnectDevice(goConnect) {
   await sendZeroRepeated();
 
   try {
+    if (state.device.notifyCharacteristic) {
+      try {
+        await state.device.notifyCharacteristic.stopNotifications();
+      } catch {}
+    }
+
     if (state.device.bluetoothDevice?.gatt?.connected) {
       state.device.bluetoothDevice.gatt.disconnect();
     }
@@ -1156,8 +1222,10 @@ async function disconnectDevice(goConnect) {
   state.device.name = "";
   state.device.bluetoothDevice = null;
   state.device.characteristic = null;
+  state.device.notifyCharacteristic = null;
   state.device.sending = false;
   state.device.lastPacket = "";
+  state.device.writeMode = "auto";
 
   if (goConnect) {
     setPhase(PHASE.CONNECT);
@@ -1769,13 +1837,13 @@ function updateChannelSetting(el) {
 
   if (kind === "limit") cfg.limit = intClamp(el.value, 0, 100);
   if (kind === "test") cfg.testPercent = intClamp(el.value, 0, 100);
-  if (kind === "width") cfg.pulseWidth = intClamp(el.value, 1, 60);
-  if (kind === "freq") cfg.frequency = intClamp(el.value, 1, 200);
+  if (kind === "width") cfg.pulseWidth = intClamp(el.value, 1, 100);
+  if (kind === "freq") cfg.frequency = intClamp(el.value, 10, 240);
 
   cfg.tested = false;
   saveSettings();
 
-  const suffix = kind === "freq" ? "Hz" : kind === "width" ? "μs" : "%";
+  const suffix = kind === "limit" || kind === "test" ? "%" : "";
   setText(`#${CSS.escape(el.dataset.range)}-value`, `${el.value}${suffix}`);
 }
 
@@ -1934,6 +2002,34 @@ function tickOutput() {
   sendOutputThrottled(0, 0);
 }
 
+async function sendCoyoteInit() {
+  if (state.device.mode === "simulation") {
+    return true;
+  }
+
+  if (state.device.mode !== "ble" || !state.device.characteristic) {
+    return false;
+  }
+
+  let ok = false;
+
+  for (let i = 0; i < 3; i++) {
+    ok = await writeBlePacket(COYOTE_INIT_PACKET, true);
+
+    if (ok) {
+      await sleep(60);
+    }
+  }
+
+  if (ok) {
+    log("COYOTE BF初期化送信");
+  } else {
+    log("COYOTE BF初期化失敗");
+  }
+
+  return ok;
+}
+
 async function sendOutputThrottled(A, B) {
   const now = Date.now();
 
@@ -1959,45 +2055,141 @@ async function sendOutputPacket(A, B) {
   B = clamp(B, 0, 100);
 
   if (state.device.mode === "simulation") {
-    return;
+    return true;
   }
 
-  if (state.device.mode !== "ble" || !state.device.characteristic || state.device.sending) {
-    return;
+  if (state.device.mode !== "ble" || !state.device.characteristic) {
+    return false;
+  }
+
+  const packet = buildPacket(A, B);
+  const ok = await writeBlePacket(packet, false);
+
+  if (!ok && state.phase === PHASE.PLAYING) {
+    safeStop("BLE送信エラー");
+  }
+
+  return ok;
+}
+
+async function writeBlePacket(packet, force) {
+  if (!state.device.characteristic) {
+    return false;
+  }
+
+  if (state.device.sending && !force) {
+    return false;
   }
 
   state.device.sending = true;
 
   try {
-    await state.device.characteristic.writeValueWithoutResponse(buildPacket(A, B));
+    const data = packet instanceof Uint8Array ? packet : new Uint8Array(packet);
+
+    if (state.device.writeMode === "withoutResponse") {
+      await state.device.characteristic.writeValueWithoutResponse(data);
+      state.device.sending = false;
+      return true;
+    }
+
+    if (state.device.writeMode === "withResponse") {
+      await writeWithResponseCompatible(data);
+      state.device.sending = false;
+      return true;
+    }
+
+    try {
+      await state.device.characteristic.writeValueWithoutResponse(data);
+      state.device.writeMode = "withoutResponse";
+      state.device.sending = false;
+      return true;
+    } catch (errorWithoutResponse) {
+      try {
+        await writeWithResponseCompatible(data);
+        state.device.writeMode = "withResponse";
+        state.device.sending = false;
+        return true;
+      } catch (errorWithResponse) {
+        log(`BLE書込失敗: ${errorWithResponse.message || errorWithoutResponse.message}`);
+        state.device.sending = false;
+        return false;
+      }
+    }
   } catch (error) {
+    log(`BLE書込例外: ${error.message}`);
     state.device.sending = false;
-    safeStop(`BLE送信エラー: ${error.message}`);
+    return false;
+  }
+}
+
+async function writeWithResponseCompatible(data) {
+  if (typeof state.device.characteristic.writeValueWithResponse === "function") {
+    await state.device.characteristic.writeValueWithResponse(data);
     return;
   }
 
-  state.device.sending = false;
+  if (typeof state.device.characteristic.writeValue === "function") {
+    await state.device.characteristic.writeValue(data);
+    return;
+  }
+
+  throw new Error("writeValueWithResponse/writeValueが使用できません");
 }
 
 function buildPacket(A, B) {
-  const a = intClamp((clamp(A, 0, 100) / 100) * 255, 0, 255);
-  const b = intClamp((clamp(B, 0, 100) / 100) * 255, 0, 255);
-  const width = intClamp(Math.max(state.settings.channels.A.pulseWidth, state.settings.channels.B.pulseWidth), 1, 60);
-  const freq = intClamp(Math.max(state.settings.channels.A.frequency, state.settings.channels.B.frequency), 1, 200);
-  const bytes = [0xB0, 0x0F, a, b];
+  const strengthA = coyoteStrengthFromPercent(A);
+  const strengthB = coyoteStrengthFromPercent(B);
 
-  for (let i = 0; i < 4; i++) bytes.push(width);
-  for (let i = 0; i < 4; i++) bytes.push(freq);
-  for (let i = 0; i < 4; i++) bytes.push(width);
-  for (let i = 0; i < 4; i++) bytes.push(freq);
+  const freqA = coyoteFrequency("A");
+  const freqB = coyoteFrequency("B");
+  const waveA = coyoteWaveStrength("A");
+  const waveB = coyoteWaveStrength("B");
+
+  const bytes = [
+    0xB0,
+    0x0F,
+    strengthA,
+    strengthB,
+    freqA,
+    freqA,
+    freqA,
+    freqA,
+    waveA,
+    waveA,
+    waveA,
+    waveA,
+    freqB,
+    freqB,
+    freqB,
+    freqB,
+    waveB,
+    waveB,
+    waveB,
+    waveB
+  ];
 
   return new Uint8Array(bytes);
+}
+
+function coyoteStrengthFromPercent(percentValue) {
+  const safePercent = clamp(percentValue, 0, 100);
+  return intClamp((safePercent / 100) * 200, 0, 200);
+}
+
+function coyoteFrequency(ch) {
+  const cfg = state.settings.channels[ch] || {};
+  return intClamp(cfg.frequency || 100, 10, 240);
+}
+
+function coyoteWaveStrength(ch) {
+  const cfg = state.settings.channels[ch] || {};
+  return intClamp(cfg.pulseWidth || 20, 0, 100);
 }
 
 async function sendZeroRepeated() {
   stopAllOutputLocal();
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     await sendOutputPacket(0, 0);
     await sleep(35);
   }
