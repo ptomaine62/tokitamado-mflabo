@@ -1,7 +1,7 @@
 "use strict";
 
 const VERSION = "20260605-06";
-const PRODUCT_FAMILY = :contentReference[oaicite:0]{index=0}T";
+const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
 const DEVICE_NAME_PREFIX = "ID:47L";
@@ -190,6 +190,7 @@ function bindDocumentEvents() {
   if ("speechSynthesis" in window) {
     window.speechSynthesis.onvoiceschanged = () => {
       loadVoices();
+
       if (state.phase === PHASE.RULE_SETUP) {
         render();
       }
@@ -355,6 +356,7 @@ function merge(base, patch) {
       if (!base[key]) {
         base[key] = {};
       }
+
       merge(base[key], patch[key]);
     } else {
       base[key] = patch[key];
@@ -1556,6 +1558,7 @@ function startDiceAnimation(roller) {
   state.timers.dice = setInterval(() => {
     state.ui.rollFaces[roller] = randomDice();
     const face = document.querySelector(`[data-dice-face="${roller}"]`);
+
     if (face) {
       face.textContent = DICE[state.ui.rollFaces[roller]];
     }
@@ -1653,16 +1656,19 @@ function updateLiveDom() {
   updatePlayerLive("p2", maxCharge);
 
   const countdown = document.getElementById("countdown-line");
+
   if (countdown) {
     countdown.textContent = countdownText();
   }
 
   const phaseHint = document.getElementById("phase-hint");
+
   if (phaseHint) {
     phaseHint.textContent = phaseHintText();
   }
 
   const advanceHint = document.getElementById("advance-hint");
+
   if (advanceHint) {
     advanceHint.textContent = canAdvance() ? "タップでスキップ" : "自動進行します";
     advanceHint.classList.toggle("muted-hint", !canAdvance());
@@ -1698,6 +1704,7 @@ function setMiniGauge(key, value, max, label) {
 
 function setWidth(selector, pct) {
   const el = document.querySelector(selector);
+
   if (el) {
     el.style.width = `${clamp(pct, 0, 100)}%`;
   }
@@ -1705,6 +1712,7 @@ function setWidth(selector, pct) {
 
 function setText(selector, text) {
   const el = document.querySelector(selector);
+
   if (el) {
     el.textContent = text;
   }
