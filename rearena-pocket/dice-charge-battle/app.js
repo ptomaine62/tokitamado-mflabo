@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-02";
+const VERSION = "20260605-03";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -34,9 +34,9 @@ const STATUS = {
 };
 
 const STORE = {
-  access: "dcb_access_granted_v2",
-  disclaimer: "dcb_disclaimer_accepted_v2",
-  settings: "dcb_settings_v2"
+  access: "dcb_access_granted_v3",
+  disclaimer: "dcb_disclaimer_accepted_v3",
+  settings: "dcb_settings_v3"
 };
 
 const TIMING = {
@@ -86,7 +86,12 @@ const DEFAULT_SETTINGS = {
   },
   audio: {
     soundEnabled: true,
-    speechEnabled: true
+    soundVolume: 0.5,
+    speechEnabled: false,
+    speechRate: 1.0,
+    speechPitch: 1.0,
+    speechVolume: 1.0,
+    voiceName: ""
   }
 };
 
@@ -97,6 +102,7 @@ const toastRoot = document.getElementById("toast-root");
 const state = {
   phase: PHASE.ACCESS,
   previousPhase: PHASE.ACCESS,
+  safeReturnPhase: PHASE.CONNECT,
   accessGranted: false,
   disclaimerAccepted: false,
   paused: false,
@@ -126,7 +132,8 @@ const state = {
     diceRolling: false,
     rollFaces: { p1: 1, p2: 1 },
     countdownEnd: 0,
-    skipHandler: null
+    skipHandler: null,
+    voices: []
   },
   timers: {
     auto: null,
@@ -159,6 +166,7 @@ function boot() {
 
   bindDocumentEvents();
   bindSafetyEvents();
+  loadVoices();
   startOutputLoop();
   startLiveDomLoop();
   render();
@@ -172,6 +180,15 @@ function bindDocumentEvents() {
   document.addEventListener("pointerdown", onPointerDown);
   document.addEventListener("pointerup", stopChannelTest);
   document.addEventListener("pointercancel", stopChannelTest);
+
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.onvoiceschanged = () => {
+      loadVoices();
+      if (state.phase === PHASE.RULE_SETUP) {
+        render();
+      }
+    };
+  }
 }
 
 function bindSafetyEvents() {
@@ -187,6 +204,7 @@ function bindSafetyEvents() {
 
 async function onClick(event) {
   const el = event.target.closest("[data-action]");
+
   if (!el) {
     return;
   }
@@ -213,14 +231,17 @@ async function onClick(event) {
   else if (action === "roll") rollCurrentDice();
   else if (action === "advance") advanceMessage();
   else if (action === "pause") togglePause();
-  else if (action === "give-up") giveUp();
+  else if (action === "give-up-p1") giveUp("p1");
+  else if (action === "give-up-p2") giveUp("p2");
   else if (action === "rotate") toggleRotate();
   else if (action === "emergency-stop") safeStop("緊急停止ボタンが押されました");
   else if (action === "zero") sendZeroRepeated();
-  else if (action === "unlock-safe") unlockSafe();
+  else if (action === "safe-return-previous") safeReturnPrevious();
+  else if (action === "safe-return-channel") safeReturnChannel();
   else if (action === "reset-access") resetAccess();
   else if (action === "rematch") startGame();
   else if (action === "result-settings") setPhase(PHASE.RULE_SETUP);
+  else if (action === "test-speech") testSpeech();
 }
 
 function onInput(event) {
@@ -239,9 +260,35 @@ function onInput(event) {
     return;
   }
 
+  if (el.dataset.ruleSec) {
+    const min = Number(el.min);
+    const max = Number(el.max);
+    const seconds = clamp(el.value, min, max);
+    state.settings.rules[el.dataset.ruleSec] = Math.round(seconds * 1000);
+    saveSettings();
+    return;
+  }
+
   if (el.dataset.check) {
     const section = el.dataset.section || "rules";
     state.settings[section][el.dataset.check] = el.checked;
+    saveSettings();
+    return;
+  }
+
+  if (el.dataset.audioNumber) {
+    const key = el.dataset.audioNumber;
+    const min = Number(el.min);
+    const max = Number(el.max);
+    const value = clamp(el.value, min, max);
+    state.settings.audio[key] = value;
+    updateAudioValueLabel(key, value);
+    saveSettings();
+    return;
+  }
+
+  if (el.dataset.audioSelect) {
+    state.settings.audio[el.dataset.audioSelect] = el.value;
     saveSettings();
     return;
   }
@@ -260,6 +307,7 @@ function onInput(event) {
 
 function onPointerDown(event) {
   const testButton = event.target.closest("[data-test-channel]");
+
   if (!testButton) {
     return;
   }
@@ -499,6 +547,7 @@ function renderRuleSetup() {
   view.innerHTML = `
     <section class="screen">
       ${header(PRODUCT_NAME, "ゲーム設定")}
+
       <div class="card">
         <h2>プレイヤー</h2>
         <div class="grid two">
@@ -506,6 +555,7 @@ function renderRuleSetup() {
           <label class="field-label">P2名前<input class="input" id="p2-name" value="${escape(p.p2.name)}"></label>
         </div>
       </div>
+
       <div class="card">
         <h2>ルール</h2>
         <div class="setup-grid">
@@ -513,19 +563,32 @@ function renderRuleSetup() {
           ${numberField("chargeMultiplier", "出目差チャージ", r.chargeMultiplier, 1, 20, 1)}
           ${numberField("drawCharge", "あいこチャージ", r.drawCharge, 0, 20, 1)}
           ${checkField("continuousStim", "継続出力", r.continuousStim)}
-          ${numberField("continuousOnMs", "継続ON時間ms", r.continuousOnMs, 100, 5000, 100)}
-          ${numberField("continuousOffMs", "継続OFF時間ms", r.continuousOffMs, 100, 10000, 100)}
+          ${secondField("continuousOnMs", "継続ON時間（秒）", r.continuousOnMs, 0.1, 5, 0.1)}
+          ${secondField("continuousOffMs", "継続OFF時間（秒）", r.continuousOffMs, 0.1, 10, 0.1)}
           ${checkField("settlementStim", "精算イベント", r.settlementStim)}
-          ${numberField("settlementCountdownMs", "精算カウントms", r.settlementCountdownMs, 0, 10000, 500)}
+          ${secondField("settlementCountdownMs", "精算カウント（秒）", r.settlementCountdownMs, 0, 10, 0.5)}
           ${numberField("settlementBonusPercent", "精算ボーナス%", r.settlementBonusPercent, 0, 50, 1)}
-          ${numberField("settlementDurationMs", "精算時間ms", r.settlementDurationMs, 100, 10000, 100)}
-          ${numberField("finalSettlementCountdownMs", "最終精算カウントms", r.finalSettlementCountdownMs, 0, 10000, 500)}
+          ${secondField("settlementDurationMs", "精算時間（秒）", r.settlementDurationMs, 0.1, 10, 0.1)}
+          ${secondField("finalSettlementCountdownMs", "最終精算カウント（秒）", r.finalSettlementCountdownMs, 0, 10, 0.5)}
           ${numberField("finalSettlementBonusPercent", "最終精算ボーナス%", r.finalSettlementBonusPercent, 0, 50, 1)}
-          ${numberField("finalSettlementDurationMs", "最終精算時間ms", r.finalSettlementDurationMs, 100, 15000, 100)}
-          ${checkField("soundEnabled", "効果音", audio.soundEnabled, "audio")}
-          ${checkField("speechEnabled", "音声読み上げ", audio.speechEnabled, "audio")}
+          ${secondField("finalSettlementDurationMs", "最終精算時間（秒）", r.finalSettlementDurationMs, 0.1, 15, 0.1)}
         </div>
       </div>
+
+      <div class="card">
+        <h2>音声・効果音</h2>
+        <div class="setup-grid">
+          ${checkField("soundEnabled", "効果音", audio.soundEnabled, "audio")}
+          ${audioNumberField("soundVolume", "効果音音量", audio.soundVolume, 0, 1, 0.05)}
+          ${checkField("speechEnabled", "音声読み上げ", audio.speechEnabled, "audio")}
+          ${voiceSelectField(audio.voiceName)}
+          ${audioNumberField("speechRate", "読み上げ速度", audio.speechRate, 0.5, 1.8, 0.1)}
+          ${audioNumberField("speechPitch", "読み上げ高さ", audio.speechPitch, 0.5, 1.8, 0.1)}
+          ${audioNumberField("speechVolume", "読み上げ音量", audio.speechVolume, 0, 1, 0.05)}
+          <button class="btn ghost stable-btn" data-action="test-speech">音声テスト</button>
+        </div>
+      </div>
+
       <div class="footer-safe">
         <button class="btn ghost stable-btn" data-action="back-channel-test">A/B設定</button>
         <button class="btn primary stable-btn" data-action="start-game">ゲーム開始</button>
@@ -544,11 +607,51 @@ function numberField(key, label, value, min, max, step) {
   `;
 }
 
+function secondField(key, label, valueMs, min, max, step) {
+  const valueSec = Number((Number(valueMs || 0) / 1000).toFixed(2));
+
+  return `
+    <label class="field-label">
+      ${escape(label)}
+      <input class="input" type="number" id="rule-sec-${escape(key)}" value="${escape(valueSec)}" min="${min}" max="${max}" step="${step}" data-rule-sec="${escape(key)}">
+    </label>
+  `;
+}
+
 function checkField(key, label, checked, section = "rules") {
   return `
     <label class="check-row">
       <input type="checkbox" data-check="${escape(key)}" data-section="${escape(section)}" ${checked ? "checked" : ""}>
       <span>${escape(label)}</span>
+    </label>
+  `;
+}
+
+function audioNumberField(key, label, value, min, max, step) {
+  return `
+    <label class="field-label">
+      ${escape(label)} <span class="inline-value" id="audio-value-${escape(key)}">${escape(formatAudioValue(key, value))}</span>
+      <input class="input" type="range" value="${escape(value)}" min="${min}" max="${max}" step="${step}" data-audio-number="${escape(key)}">
+    </label>
+  `;
+}
+
+function voiceSelectField(selectedName) {
+  const voices = state.ui.voices;
+  const options = [
+    `<option value="">ブラウザ標準</option>`,
+    ...voices.map((voice) => {
+      const selected = voice.name === selectedName ? "selected" : "";
+      return `<option value="${escape(voice.name)}" ${selected}>${escape(voice.name)} / ${escape(voice.lang)}</option>`;
+    })
+  ].join("");
+
+  return `
+    <label class="field-label">
+      読み上げ音声
+      <select class="input" data-audio-select="voiceName">
+        ${options}
+      </select>
     </label>
   `;
 }
@@ -653,14 +756,20 @@ function renderBattlePlayerCard(id) {
 
 function renderMiniHud(id) {
   const p = state.game.players[id];
+  const maxCharge = maxChargeValue();
 
   return `
-    <div class="mini-hud player-tone-${p.colorIndex}">
-      <b>${escape(p.name)}</b>
-      <span>HP <i data-mini-hp="${id}">${Math.round(p.hp)}</i></span>
-      <span>Charge <i data-mini-charge="${id}">${Math.round(p.charge)}</i></span>
-      <span>OUT <i data-mini-output="${id}">${formatPercent(outputOf(id))}</i></span>
-    </div>
+    <section class="mini-hud-card player-tone-${p.colorIndex}">
+      <div class="mini-hud-head">
+        <b>${escape(p.name)}</b>
+        <span>CH ${escape(p.channel)}</span>
+      </div>
+      <div class="mini-hud-gauges">
+        ${miniGauge("HP", p.hp, 100, "hp", id)}
+        ${miniGauge("Charge", p.charge, maxCharge, "charge", id)}
+        ${miniGauge("OUTPUT", outputOf(id), 100, "output", id)}
+      </div>
+    </section>
   `;
 }
 
@@ -675,6 +784,22 @@ function gauge(label, value, max, kind, id) {
       </div>
       <div class="bar ${escape(kind)}">
         <div class="bar-fill" data-gauge="${kind}-${id}" style="width:${pct}%"></div>
+      </div>
+    </div>
+  `;
+}
+
+function miniGauge(label, value, max, kind, id) {
+  const pct = percent(value, max);
+
+  return `
+    <div class="mini-gauge-row">
+      <div class="mini-gauge-label">
+        <span>${escape(label)}</span>
+        <b data-mini-gauge-text="${kind}-${id}">${kind === "output" ? formatPercent(value) : Math.round(value)}</b>
+      </div>
+      <div class="mini-bar ${escape(kind)}">
+        <div class="mini-bar-fill" data-mini-gauge="${kind}-${id}" style="width:${pct}%"></div>
       </div>
     </div>
   `;
@@ -710,8 +835,9 @@ function renderDiceBox(id) {
 
 function renderGameFooter() {
   return `
-    <footer class="game-footer">
-      <button class="btn ghost footer-btn stable-btn" data-action="give-up">ギブアップ</button>
+    <footer class="game-footer four">
+      <button class="btn ghost footer-btn stable-btn" data-action="give-up-p1">P1ギブアップ</button>
+      <button class="btn ghost footer-btn stable-btn" data-action="give-up-p2">P2ギブアップ</button>
       <button class="btn ghost footer-btn stable-btn" data-action="pause">${state.paused ? "再開" : "一時停止"}</button>
       <button class="btn danger footer-btn emergency stable-btn" data-action="emergency-stop">緊急停止</button>
     </footer>
@@ -721,8 +847,8 @@ function renderGameFooter() {
 function renderFooterSafe(showGameControls) {
   return `
     <div class="footer-safe">
-      <button class="btn ghost stable-btn" data-action="${showGameControls ? "give-up" : "back-connect"}">${showGameControls ? "ギブアップ" : "接続へ"}</button>
-      <button class="btn ghost stable-btn" data-action="${showGameControls ? "pause" : "zero"}">${showGameControls ? "一時停止" : "出力0%"}</button>
+      <button class="btn ghost stable-btn" data-action="${showGameControls ? "give-up-p1" : "back-connect"}">${showGameControls ? "P1ギブアップ" : "接続へ"}</button>
+      <button class="btn ghost stable-btn" data-action="${showGameControls ? "give-up-p2" : "zero"}">${showGameControls ? "P2ギブアップ" : "出力0%"}</button>
       <button class="btn danger stable-btn" data-action="emergency-stop">緊急停止</button>
     </div>
   `;
@@ -766,10 +892,11 @@ function renderSafeLocked() {
       <div class="card safe-card">
         <h1 class="safe-title">SAFE STOP</h1>
         <p class="safe-reason">${escape(state.safeReason || "安全停止しました")}</p>
-        <p class="muted">A/B出力は0%にリセットされました。Access Code未認証の場合は解除できません。</p>
+        <p class="muted">A/B出力は0%にリセットされました。復帰先を選んでください。</p>
         <div class="button-stack">
           <button class="btn danger wide stable-btn" data-action="zero">出力0%を再送信</button>
-          <button class="btn primary wide stable-btn" data-action="unlock-safe">安全確認して復帰</button>
+          <button class="btn primary wide stable-btn" data-action="safe-return-previous">直前の画面に戻る</button>
+          <button class="btn cyan wide stable-btn" data-action="safe-return-channel">チャンネル設定にもどる</button>
           <button class="btn ghost wide stable-btn" data-action="reset-access">Access Codeからやり直す</button>
         </div>
       </div>
@@ -834,7 +961,7 @@ async function connectKnown() {
 
     await attachDevice(device);
   } catch (error) {
-    safeStop(`かんたん接続失敗: ${error.message}`);
+    handleConnectError(`かんたん接続失敗: ${error.message}`);
   }
 }
 
@@ -857,7 +984,7 @@ async function connectPreferred() {
     await attachDevice(device);
   } catch (error) {
     if (!String(error.message || "").includes("User cancelled")) {
-      safeStop(`推奨ID接続失敗: ${error.message}`);
+      handleConnectError(`推奨ID接続失敗: ${error.message}`);
     }
   }
 }
@@ -881,8 +1008,17 @@ async function connectManual() {
     await attachDevice(device);
   } catch (error) {
     if (!String(error.message || "").includes("User cancelled")) {
-      safeStop(`手動接続失敗: ${error.message}`);
+      handleConnectError(`手動接続失敗: ${error.message}`);
     }
+  }
+}
+
+function handleConnectError(message) {
+  log(message);
+  toast(message);
+
+  if (state.phase === PHASE.PLAYING) {
+    safeStop(message);
   }
 }
 
@@ -893,7 +1029,7 @@ async function attachDevice(device) {
   state.device.name = device.name || "低周波デバイス";
 
   device.addEventListener("gattserverdisconnected", () => {
-    safeStop("低周波デバイスが切断されました");
+    handleDeviceDisconnected();
   });
 
   const server = await device.gatt.connect();
@@ -905,6 +1041,23 @@ async function attachDevice(device) {
   await sendZeroRepeated();
   log(`低周波デバイス接続: ${state.device.name}`);
   setPhase(PHASE.CHANNEL_TEST);
+}
+
+function handleDeviceDisconnected() {
+  state.device.mode = "none";
+  state.device.connected = false;
+  state.device.name = "";
+  state.device.bluetoothDevice = null;
+  state.device.characteristic = null;
+  stopAllOutputLocal();
+
+  if (state.phase === PHASE.PLAYING) {
+    safeStop("低周波デバイスが切断されました");
+  } else {
+    log("低周波デバイスが切断されました");
+    toast("低周波デバイスが切断されました");
+    render();
+  }
 }
 
 function connectSimulation() {
@@ -1418,18 +1571,24 @@ function updatePlayerLive(id, maxCharge) {
   setText(`[data-charge-number="${id}"]`, Math.round(p.charge));
   setText(`[data-dice-value="${id}"]`, p.lastRoll || "-");
   setText(`[data-dice-result="${id}"]`, p.lastRoll || "-");
-  setText(`[data-mini-hp="${id}"]`, Math.round(p.hp));
-  setText(`[data-mini-charge="${id}"]`, Math.round(p.charge));
-  setText(`[data-mini-output="${id}"]`, formatPercent(out));
 
   setGauge(`hp-${id}`, p.hp, 100, Math.round(p.hp));
   setGauge(`charge-${id}`, p.charge, maxCharge, Math.round(p.charge));
   setGauge(`output-${id}`, out, 100, formatPercent(out));
+
+  setMiniGauge(`hp-${id}`, p.hp, 100, Math.round(p.hp));
+  setMiniGauge(`charge-${id}`, p.charge, maxCharge, Math.round(p.charge));
+  setMiniGauge(`output-${id}`, out, 100, formatPercent(out));
 }
 
 function setGauge(key, value, max, label) {
   setWidth(`[data-gauge="${key}"]`, percent(value, max));
   setText(`[data-gauge-text="${key}"]`, label);
+}
+
+function setMiniGauge(key, value, max, label) {
+  setWidth(`[data-mini-gauge="${key}"]`, percent(value, max));
+  setText(`[data-mini-gauge-text="${key}"]`, label);
 }
 
 function setWidth(selector, pct) {
@@ -1559,6 +1718,7 @@ function emergencyZeroOnly() {
 
 async function safeStop(reason) {
   state.safeReason = reason || "安全停止しました";
+  state.safeReturnPhase = state.phase === PHASE.SAFE_LOCKED ? state.safeReturnPhase : state.phase;
 
   stopAllOutputLocal();
   clearTimers();
@@ -1619,15 +1779,13 @@ function togglePause() {
   render();
 }
 
-function giveUp() {
+function giveUp(playerId) {
   if (!state.game) {
     return;
   }
 
-  const p1 = state.game.players.p1;
-  const p2 = state.game.players.p2;
-  const loser = p1.charge >= p2.charge ? p1 : p2;
-  const winner = loser === p1 ? p2 : p1;
+  const loser = state.game.players[playerId];
+  const winner = playerId === "p1" ? state.game.players.p2 : state.game.players.p1;
 
   loser.charge += 50;
   state.game.resultReason = `${loser.name} がギブアップ。\n${winner.name} の勝利です。`;
@@ -1650,20 +1808,45 @@ function applyRotation() {
   appShell.classList.toggle("screen-rotated", state.ui.rotated && state.phase === PHASE.PLAYING);
 }
 
-function unlockSafe() {
+function safeReturnPrevious() {
   if (!state.accessGranted) {
     setPhase(PHASE.ACCESS);
     return;
   }
-
-  stopAllOutputLocal();
 
   if (!state.disclaimerAccepted) {
     setPhase(PHASE.DISCLAIMER);
     return;
   }
 
-  setPhase(state.device.connected ? PHASE.CHANNEL_TEST : PHASE.CONNECT);
+  const phase = state.safeReturnPhase || PHASE.CONNECT;
+
+  if (phase === PHASE.PLAYING) {
+    setPhase(PHASE.RULE_SETUP);
+    return;
+  }
+
+  setPhase(phase);
+}
+
+function safeReturnChannel() {
+  if (!state.accessGranted) {
+    setPhase(PHASE.ACCESS);
+    return;
+  }
+
+  if (!state.disclaimerAccepted) {
+    setPhase(PHASE.DISCLAIMER);
+    return;
+  }
+
+  if (!state.device.connected) {
+    toast("先に接続または確認モードを選んでください");
+    setPhase(PHASE.CONNECT);
+    return;
+  }
+
+  setPhase(PHASE.CHANNEL_TEST);
 }
 
 function resetAccess() {
@@ -1755,6 +1938,18 @@ function formatPercent(value) {
   return `${n.toFixed(1)}%`;
 }
 
+function formatAudioValue(key, value) {
+  if (key === "soundVolume" || key === "speechVolume") {
+    return `${Math.round(Number(value || 0) * 100)}%`;
+  }
+
+  return `${Number(value || 0).toFixed(1)}x`;
+}
+
+function updateAudioValueLabel(key, value) {
+  setText(`#audio-value-${CSS.escape(key)}`, formatAudioValue(key, value));
+}
+
 function escape(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1803,6 +1998,17 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function loadVoices() {
+  if (!window.speechSynthesis) {
+    state.ui.voices = [];
+    return;
+  }
+
+  state.ui.voices = window.speechSynthesis
+    .getVoices()
+    .filter((voice) => voice.lang.toLowerCase().startsWith("ja") || voice.lang.toLowerCase().includes("jp"));
+}
+
 async function unlockAudio() {
   if (state.audio.unlocked) {
     return;
@@ -1824,10 +2030,11 @@ function getAudioContext() {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     state.audio.ctx = new AudioContextClass();
     state.audio.master = state.audio.ctx.createGain();
-    state.audio.master.gain.value = 0.16;
+    state.audio.master.gain.value = state.settings.audio.soundVolume;
     state.audio.master.connect(state.audio.ctx.destination);
   }
 
+  state.audio.master.gain.value = clamp(state.settings.audio.soundVolume, 0, 1);
   return state.audio.ctx;
 }
 
@@ -1846,7 +2053,7 @@ function playSound(type) {
     osc.frequency.value = freq;
 
     gain.gain.setValueAtTime(0.001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.16, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.22, ctx.currentTime + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
 
     osc.connect(gain);
@@ -1874,9 +2081,21 @@ function speak(text) {
 
     const utter = new SpeechSynthesisUtterance(normalized);
     utter.lang = "ja-JP";
-    utter.rate = 1;
-    utter.pitch = 1;
-    utter.volume = 1;
+    utter.rate = clamp(state.settings.audio.speechRate, 0.5, 1.8);
+    utter.pitch = clamp(state.settings.audio.speechPitch, 0.5, 1.8);
+    utter.volume = clamp(state.settings.audio.speechVolume, 0, 1);
+
+    const voiceName = state.settings.audio.voiceName;
+    const voice = state.ui.voices.find((candidate) => candidate.name === voiceName);
+
+    if (voice) {
+      utter.voice = voice;
+    }
+
     window.speechSynthesis.speak(utter);
   } catch {}
+}
+
+function testSpeech() {
+  speak("DICE CHARGE BATTLE 音声テストです。");
 }
