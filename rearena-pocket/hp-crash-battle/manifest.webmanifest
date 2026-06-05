@@ -1,13 +1,12 @@
 {
-  "name": "SHOCKiG REARENA POCKET - DICE CHARGE BATTLE",
-  "short_name": "DICE CHARGE",
-  "description": "SHOCKiG REARENA POCKET - DICE CHARGE BATTLE",
+  "name": "SHOCKiG REARENA POCKET - HP CRASH BATTLE",
+  "short_name": "HP CRASH",
+  "description": "SHOCKiG REARENA POCKET - HP CRASH BATTLE",
   "start_url": "./index.html",
-  "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
   "background_color": "#08090c",
   "theme_color": "#08090c",
+  "orientation": "any",
   "icons": [
     {
       "src": "./assets/logo.svg",
