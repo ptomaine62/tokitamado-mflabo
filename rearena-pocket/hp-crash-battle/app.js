@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-hp-01";
+const VERSION = "20260605-hp-02";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "HP CRASH BATTLE";
 const ACCESS_CODE = "HCB-MFLABO-202606";
@@ -1352,7 +1352,7 @@ function resolveAttack(total, dice) {
   if (result.key === "fumble") {
     attacker.debt = clamp(attacker.debt + result.debt, 0, 100);
     pulseTarget = attacker.id;
-    pulsePercent = Math.max(h.minFumbleStimPercent, attacker.debt * 0.5);
+    pulsePercent = scaledStimForPlayer(attacker.id, h.minFumbleStimPercent, 0, "linear");
     pulseDuration = h.fumblePulseDurationMs;
     tone = "critical";
     message = `ファンブル！ ${attacker.name} に反動\n出目 ${total} / 蓄積 +${result.debt}`;
@@ -1361,19 +1361,19 @@ function resolveAttack(total, dice) {
     defender.debt = clamp(defender.debt + result.debt, 0, 100);
 
     if (result.key === "graze") {
-      pulsePercent = Math.max(h.minGrazeStimPercent, defender.debt * 0.5);
+      pulsePercent = scaledStimForPlayer(defender.id, h.minGrazeStimPercent, 0, "soft");
       pulseDuration = h.normalPulseDurationMs;
       tone = "stim";
     } else if (result.key === "hit") {
-      pulsePercent = Math.max(h.minHitStimPercent, defender.debt * 0.5);
+      pulsePercent = scaledStimForPlayer(defender.id, h.minHitStimPercent, 0, "linear");
       pulseDuration = h.normalPulseDurationMs;
       tone = "stim";
     } else if (result.key === "strong") {
-      pulsePercent = Math.max(h.minStrongStimPercent, defender.debt * 0.5 + h.strongSettlementBonusPercent);
+      pulsePercent = scaledStimForPlayer(defender.id, h.minStrongStimPercent, h.strongSettlementBonusPercent, "linear");
       pulseDuration = h.strongPulseDurationMs;
       tone = "critical";
     } else {
-      pulsePercent = Math.max(h.minCriticalStimPercent, defender.debt * 0.5 + h.criticalSettlementBonusPercent);
+      pulsePercent = scaledStimForPlayer(defender.id, h.minCriticalStimPercent, h.criticalSettlementBonusPercent, "hard");
       pulseDuration = h.criticalPulseDurationMs;
       tone = "critical";
     }
@@ -1420,20 +1420,39 @@ function resolveRelease(total, dice) {
   if (total <= 4) {
     category = "暴発";
     attacker.hp = Math.max(0, attacker.hp - h.releaseBurstSelfDamage);
-    pulseA = attacker.channel === "A" ? Math.max(h.minReleaseBurstStimPercent, attacker.debt * 0.5 + h.releaseBurstSelfBonusPercent) : 0;
-    pulseB = attacker.channel === "B" ? Math.max(h.minReleaseBurstStimPercent, attacker.debt * 0.5 + h.releaseBurstSelfBonusPercent) : 0;
+
+    const selfPercent = scaledStimForPlayer(
+      attacker.id,
+      h.minReleaseBurstStimPercent,
+      h.releaseBurstSelfBonusPercent,
+      "hard"
+    );
+
+    pulseA = attacker.channel === "A" ? selfPercent : 0;
+    pulseB = attacker.channel === "B" ? selfPercent : 0;
     duration = h.releaseBurstPulseDurationMs;
     message = `蓄積解放：暴発！\n${attacker.name} に ${h.releaseBurstSelfDamage} ダメージ`;
   } else if (total <= 7) {
     category = "失敗";
     defender.hp = Math.max(0, defender.hp - h.releaseFailureTargetDamage);
     attacker.hp = Math.max(0, attacker.hp - h.releaseFailureSelfDamage);
-    pulseA = attacker.channel === "A"
-      ? Math.max(h.minReleaseFailureStimPercent, attacker.debt * 0.4 + h.releaseFailureSelfBonusPercent)
-      : Math.max(h.minReleaseFailureStimPercent, defender.debt * 0.4);
-    pulseB = attacker.channel === "B"
-      ? Math.max(h.minReleaseFailureStimPercent, attacker.debt * 0.4 + h.releaseFailureSelfBonusPercent)
-      : Math.max(h.minReleaseFailureStimPercent, defender.debt * 0.4);
+
+    const selfPercent = scaledStimForPlayer(
+      attacker.id,
+      h.minReleaseFailureStimPercent,
+      h.releaseFailureSelfBonusPercent,
+      "linear"
+    );
+
+    const targetPercent = scaledStimForPlayer(
+      defender.id,
+      h.minReleaseFailureStimPercent,
+      0,
+      "linear"
+    );
+
+    pulseA = attacker.channel === "A" ? selfPercent : targetPercent;
+    pulseB = attacker.channel === "B" ? selfPercent : targetPercent;
     duration = h.releaseFailurePulseDurationMs;
     message = `蓄積解放：失敗\n${defender.name} に ${h.releaseFailureTargetDamage} / ${attacker.name} に ${h.releaseFailureSelfDamage}`;
   } else if (total <= 10) {
@@ -1441,7 +1460,14 @@ function resolveRelease(total, dice) {
     const damage = h.releaseSuccessBaseDamage + Math.floor(attacker.debt / Math.max(1, h.releaseDamageDebtDivisor));
     defender.hp = Math.max(0, defender.hp - damage);
     defender.debt = clamp(defender.debt + h.releaseSuccessTargetDebt, 0, 100);
-    const targetPercent = Math.max(h.minReleaseSuccessStimPercent, defender.debt * 0.5 + h.releaseSuccessTargetBonusPercent);
+
+    const targetPercent = scaledStimForPlayer(
+      defender.id,
+      h.minReleaseSuccessStimPercent,
+      h.releaseSuccessTargetBonusPercent,
+      "hard"
+    );
+
     pulseA = defender.channel === "A" ? targetPercent : 0;
     pulseB = defender.channel === "B" ? targetPercent : 0;
     duration = h.releaseSuccessPulseDurationMs;
@@ -1451,7 +1477,14 @@ function resolveRelease(total, dice) {
     const damage = h.releaseGreatBaseDamage + Math.floor(attacker.debt / Math.max(1, h.releaseDamageDebtDivisor));
     defender.hp = Math.max(0, defender.hp - damage);
     defender.debt = clamp(defender.debt + h.releaseGreatTargetDebt, 0, 100);
-    const targetPercent = Math.max(h.minReleaseGreatStimPercent, defender.debt * 0.5 + h.releaseGreatTargetBonusPercent);
+
+    const targetPercent = scaledStimForPlayer(
+      defender.id,
+      h.minReleaseGreatStimPercent,
+      h.releaseGreatTargetBonusPercent,
+      "hard"
+    );
+
     pulseA = defender.channel === "A" ? targetPercent : 0;
     pulseB = defender.channel === "B" ? targetPercent : 0;
     duration = h.releaseGreatPulseDurationMs;
@@ -1765,6 +1798,34 @@ function limitChannel(ch, value) {
   const limit = cfg ? cfg.limit : 0;
 
   return clamp(Math.min(Number(value || 0), limit), 0, 100);
+}
+
+function scaledStimForPlayer(playerId, minPercent, bonusPercent = 0, curve = "linear") {
+  const player = state.game?.players?.[playerId];
+
+  if (!player) {
+    return 0;
+  }
+
+  const ch = player.channel;
+  const limit = clamp(state.settings.channels[ch]?.limit || 0, 0, 100);
+  const debt = clamp(player.debt || 0, 0, 100);
+  const min = clamp(minPercent || 0, 0, limit);
+  const bonus = clamp(bonusPercent || 0, 0, 100);
+
+  let t = debt / 100;
+
+  if (curve === "soft") {
+    t = Math.pow(t, 1.35);
+  } else if (curve === "hard") {
+    t = Math.pow(t, 0.75);
+  }
+
+  const base = min + (limit - min) * t;
+  const bonusRoom = Math.max(0, limit - base);
+  const bonusScaled = bonusRoom * (bonus / 100);
+
+  return clamp(base + bonusScaled, 0, limit);
 }
 
 function startPlayerPulse(playerId, percent, durationMs) {
