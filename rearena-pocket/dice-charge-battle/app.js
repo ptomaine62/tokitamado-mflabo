@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-06";
+const VERSION = "20260605-07";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -9,6 +9,8 @@ const DEVICE_NAME_PREFIX = "ID:47L";
 const BLE_SERVICE_UUID = "0000180c-0000-1000-8000-00805f9b34fb";
 const BLE_WRITE_CHAR_UUID = "0000150a-0000-1000-8000-00805f9b34fb";
 const BLE_NOTIFY_CHAR_UUID = "0000150b-0000-1000-8000-00805f9b34fb";
+
+const COYOTE_INIT_PACKET = new Uint8Array([0xBF, 200, 200, 128, 128, 128, 128]);
 
 const PHASE = {
   ACCESS: "ACCESS",
@@ -66,8 +68,8 @@ const DEFAULT_SETTINGS = {
     p2: { name: "P2", channel: "B", colorIndex: 2 }
   },
   channels: {
-    A: { limit: 30, testPercent: 5, pulseWidth: 10, frequency: 100, tested: false },
-    B: { limit: 30, testPercent: 5, pulseWidth: 10, frequency: 100, tested: false }
+    A: { limit: 30, testPercent: 5, pulseWidth: 20, frequency: 100, tested: false },
+    B: { limit: 30, testPercent: 5, pulseWidth: 20, frequency: 100, tested: false }
   },
   rules: {
     rounds: 10,
@@ -126,9 +128,8 @@ const state = {
     sending: false,
     lastSendAt: 0,
     lastPacket: "",
-    sequence: 1,
-    lastActualA: 0,
-    lastActualB: 0
+    writeMode: "auto",
+    notifyLog: []
   },
   ui: {
     rotated: false,
@@ -169,6 +170,7 @@ function boot() {
     state.phase = PHASE.CONNECT;
   }
 
+  normalizeSavedSettings();
   bindDocumentEvents();
   bindSafetyEvents();
   loadVoices();
@@ -177,6 +179,23 @@ function boot() {
   render();
   scrollTopSoon();
   log("起動しました");
+}
+
+function normalizeSavedSettings() {
+  for (const ch of ["A", "B"]) {
+    const cfg = state.settings.channels[ch];
+
+    if (!cfg) {
+      continue;
+    }
+
+    cfg.limit = intClamp(cfg.limit, 0, 100);
+    cfg.testPercent = intClamp(cfg.testPercent, 0, 100);
+    cfg.pulseWidth = intClamp(cfg.pulseWidth, 1, 100);
+    cfg.frequency = intClamp(cfg.frequency, 10, 240);
+  }
+
+  saveSettings();
 }
 
 function bindDocumentEvents() {
@@ -260,6 +279,7 @@ async function onClick(event) {
   else if (action === "safe-return-previous") safeReturnPrevious();
   else if (action === "safe-return-channel") safeReturnChannel();
   else if (action === "reset-access") resetAccess();
+  else if (action === "reset-channel-defaults") resetChannelDefaults();
   else if (action === "rematch") startGame();
   else if (action === "result-settings") setPhase(PHASE.RULE_SETUP);
   else if (action === "test-speech") testSpeech();
@@ -364,6 +384,23 @@ function merge(base, patch) {
   }
 
   return base;
+}
+
+function resetChannelDefaults() {
+  stopAllOutputLocal();
+
+  state.settings.channels.A = structuredClone(DEFAULT_SETTINGS.channels.A);
+  state.settings.channels.B = structuredClone(DEFAULT_SETTINGS.channels.B);
+
+  saveSettings();
+
+  if (state.device.mode === "ble") {
+    sendCoyoteInit();
+  }
+
+  toast("A/Bチャンネル設定を初期値へ戻しました");
+  log("A/Bチャンネル設定を初期値へリセット");
+  render();
 }
 
 function setPhase(phase) {
@@ -531,9 +568,13 @@ function renderChannelTest() {
       </div>
       <div class="card">
         <p class="muted">テストボタンは押している間だけ出力します。離す・キャンセル・画面外へ出ると0%になります。</p>
-        <button class="btn primary wide stable-btn" data-action="go-rule-setup" ${A.tested && B.tested ? "" : "disabled"}>
-          A/Bテスト完了：ゲーム設定へ
-        </button>
+        <p class="muted">実機向けに、強度は0〜200、波形周波数は10〜240、波形強度は0〜100へ変換して送信します。</p>
+        <div class="button-stack">
+          <button class="btn ghost wide stable-btn" data-action="reset-channel-defaults">A/Bチャンネル設定を初期値へリセット</button>
+          <button class="btn primary wide stable-btn" data-action="go-rule-setup" ${A.tested && B.tested ? "" : "disabled"}>
+            A/Bテスト完了：ゲーム設定へ
+          </button>
+        </div>
       </div>
       ${renderFooterSafe(false)}
     </section>
@@ -547,8 +588,8 @@ function renderChannelCard(ch, cfg, title) {
       <div class="form-grid">
         ${rangeInput(`limit-${ch}`, "出力リミット", cfg.limit, 0, 100, 1, "%")}
         ${rangeInput(`test-${ch}`, "テストの強さ", cfg.testPercent, 0, 100, 1, "%")}
-        ${rangeInput(`width-${ch}`, "パルス幅", cfg.pulseWidth, 1, 60, 1, "μs")}
-        ${rangeInput(`freq-${ch}`, "周波数", cfg.frequency, 1, 200, 1, "Hz")}
+        ${rangeInput(`width-${ch}`, "波形強度", cfg.pulseWidth, 1, 100, 1, "")}
+        ${rangeInput(`freq-${ch}`, "波形周波数", cfg.frequency, 10, 240, 1, "")}
       </div>
       <button class="btn big ${cfg.tested ? "safe" : "primary"} stable-btn" data-test-channel="${ch}">
         ${cfg.tested ? "✓ テスト済み" : "押してテスト"}
@@ -1070,8 +1111,8 @@ async function attachDevice(device) {
 
   try {
     state.device.notifyCharacteristic = await service.getCharacteristic(BLE_NOTIFY_CHAR_UUID);
-    await state.device.notifyCharacteristic.startNotifications();
     state.device.notifyCharacteristic.addEventListener("characteristicvaluechanged", handleCoyoteNotify);
+    await state.device.notifyCharacteristic.startNotifications();
     log("Notifyを開始しました");
   } catch (error) {
     state.device.notifyCharacteristic = null;
@@ -1080,11 +1121,11 @@ async function attachDevice(device) {
 
   state.device.mode = "ble";
   state.device.connected = true;
-  state.device.sequence = 1;
-  state.device.lastActualA = 0;
-  state.device.lastActualB = 0;
+  state.device.writeMode = "auto";
+  state.device.notifyLog = [];
 
   await sendCoyoteInit();
+  await sleep(80);
   await sendZeroRepeated();
 
   log(`低周波デバイス接続: ${state.device.name}`);
@@ -1104,13 +1145,9 @@ function handleCoyoteNotify(event) {
     bytes.push(value.getUint8(i));
   }
 
-  if (bytes[0] === 0xB1 && bytes.length >= 4) {
-    state.device.lastActualA = bytes[2];
-    state.device.lastActualB = bytes[3];
-    return;
-  }
-
-  log(`BLE Notify: ${bytesToHex(bytes)}`);
+  const hex = bytesToHex(bytes);
+  state.device.notifyLog.push(hex);
+  state.device.notifyLog = state.device.notifyLog.slice(-20);
 }
 
 function handleDeviceDisconnected() {
@@ -1120,6 +1157,7 @@ function handleDeviceDisconnected() {
   state.device.bluetoothDevice = null;
   state.device.writeCharacteristic = null;
   state.device.notifyCharacteristic = null;
+  state.device.writeMode = "auto";
   stopAllOutputLocal();
 
   if (state.phase === PHASE.PLAYING) {
@@ -1148,12 +1186,13 @@ async function disconnectDevice(goConnect) {
 
   try {
     if (state.device.notifyCharacteristic) {
-      state.device.notifyCharacteristic.removeEventListener("characteristicvaluechanged", handleCoyoteNotify);
-      await state.device.notifyCharacteristic.stopNotifications();
-    }
-  } catch {}
+      try {
+        await state.device.notifyCharacteristic.stopNotifications();
+      } catch {}
 
-  try {
+      state.device.notifyCharacteristic.removeEventListener("characteristicvaluechanged", handleCoyoteNotify);
+    }
+
     if (state.device.bluetoothDevice?.gatt?.connected) {
       state.device.bluetoothDevice.gatt.disconnect();
     }
@@ -1165,6 +1204,9 @@ async function disconnectDevice(goConnect) {
   state.device.bluetoothDevice = null;
   state.device.writeCharacteristic = null;
   state.device.notifyCharacteristic = null;
+  state.device.sending = false;
+  state.device.lastPacket = "";
+  state.device.writeMode = "auto";
   log("切断しました");
 
   if (goConnect) {
@@ -1178,28 +1220,38 @@ function startChannelTest(ch) {
     return;
   }
 
-  const cfg = state.settings.channels[ch];
-  state.output.testHold = {
-    channel: ch,
-    percent: clamp(cfg.testPercent, 0, cfg.limit)
-  };
-
-  setMessage(`チャンネル${ch} テスト中`, "normal", false);
-}
-
-function stopChannelTest() {
-  const hold = state.output.testHold;
-
-  if (!hold) {
+  if (!state.settings.channels[ch]) {
     return;
   }
 
-  state.settings.channels[hold.channel].tested = true;
+  state.output.testHold = ch;
+  state.settings.channels[ch].tested = true;
+  saveSettings();
+
+  const percentValue = limitChannel(ch, state.settings.channels[ch].testPercent);
+
+  if (ch === "A") {
+    state.output.A = percentValue;
+    state.output.B = 0;
+  } else {
+    state.output.A = 0;
+    state.output.B = percentValue;
+  }
+
+  setMessage(`チャンネル${ch} テスト中`, "normal", false);
+  updateLiveDom();
+}
+
+function stopChannelTest() {
+  if (!state.output.testHold) {
+    return;
+  }
+
   state.output.testHold = null;
   state.output.A = 0;
   state.output.B = 0;
-  saveSettings();
-  sendZeroRepeated();
+  sendOutputPacket(0, 0);
+  updateLiveDom();
   render();
 }
 
@@ -1597,8 +1649,16 @@ function updateOutput() {
     A = 0;
     B = 0;
   } else if (state.output.testHold) {
-    if (state.output.testHold.channel === "A") A = state.output.testHold.percent;
-    if (state.output.testHold.channel === "B") B = state.output.testHold.percent;
+    const ch = state.output.testHold;
+    const value = limitChannel(ch, state.settings.channels[ch].testPercent);
+
+    if (ch === "A") {
+      A = value;
+      B = 0;
+    } else {
+      A = 0;
+      B = value;
+    }
   } else if (state.phase === PHASE.PLAYING && state.game) {
     const r = state.settings.rules;
 
@@ -1719,7 +1779,7 @@ function setText(selector, text) {
 }
 
 function updateChannelSetting(el) {
-  const [kind, ch] = el.dataset.range.split("-");
+  const [kind, ch] = String(el.dataset.range || "").split("-");
   const cfg = state.settings.channels[ch];
 
   if (!cfg) {
@@ -1728,13 +1788,13 @@ function updateChannelSetting(el) {
 
   if (kind === "limit") cfg.limit = intClamp(el.value, 0, 100);
   if (kind === "test") cfg.testPercent = intClamp(el.value, 0, 100);
-  if (kind === "width") cfg.pulseWidth = intClamp(el.value, 1, 60);
-  if (kind === "freq") cfg.frequency = intClamp(el.value, 1, 200);
+  if (kind === "width") cfg.pulseWidth = intClamp(el.value, 1, 100);
+  if (kind === "freq") cfg.frequency = intClamp(el.value, 10, 240);
 
   cfg.tested = false;
   saveSettings();
 
-  const suffix = kind === "freq" ? "Hz" : kind === "width" ? "μs" : "%";
+  const suffix = kind === "limit" || kind === "test" ? "%" : "";
   setText(`#${CSS.escape(el.dataset.range)}-value`, `${el.value}${suffix}`);
 }
 
@@ -1747,13 +1807,44 @@ function outputOf(id) {
 }
 
 function limitChannel(ch, value) {
-  return clamp(Math.min(value, state.settings.channels[ch].limit), 0, 100);
+  const cfg = state.settings.channels[ch];
+  const limit = cfg ? cfg.limit : 0;
+
+  return clamp(Math.min(Number(value || 0), limit), 0, 100);
+}
+
+async function sendCoyoteInit() {
+  if (state.device.mode === "simulation") {
+    return true;
+  }
+
+  if (state.device.mode !== "ble" || !state.device.writeCharacteristic) {
+    return false;
+  }
+
+  let ok = false;
+
+  for (let i = 0; i < 3; i++) {
+    ok = await writeBlePacket(COYOTE_INIT_PACKET, true);
+
+    if (ok) {
+      await sleep(60);
+    }
+  }
+
+  if (ok) {
+    log("COYOTE BF初期化送信");
+  } else {
+    log("COYOTE BF初期化失敗");
+  }
+
+  return ok;
 }
 
 async function sendOutputThrottled(A, B) {
   const now = Date.now();
 
-  if (now - state.device.lastSendAt < 100) {
+  if (now - state.device.lastSendAt < 50) {
     return;
   }
 
@@ -1775,165 +1866,141 @@ async function sendOutputPacket(A, B) {
   B = clamp(B, 0, 100);
 
   if (state.device.mode === "simulation") {
-    return;
+    return true;
   }
 
-  if (state.device.mode !== "ble" || !state.device.writeCharacteristic || state.device.sending) {
-    return;
+  if (state.device.mode !== "ble" || !state.device.writeCharacteristic) {
+    return false;
+  }
+
+  const packet = buildPacket(A, B);
+  const ok = await writeBlePacket(packet, false);
+
+  if (!ok && state.phase === PHASE.PLAYING) {
+    safeStop("BLE送信エラー");
+  }
+
+  return ok;
+}
+
+async function writeBlePacket(packet, force) {
+  if (!state.device.writeCharacteristic) {
+    return false;
+  }
+
+  if (state.device.sending && !force) {
+    return false;
   }
 
   state.device.sending = true;
 
   try {
-    await writeBle(buildB0PacketV3(A, B));
-  } catch (error) {
-    state.device.sending = false;
-    safeStop(`BLE送信エラー: ${error.message}`);
-    return;
-  }
+    const data = packet instanceof Uint8Array ? packet : new Uint8Array(packet);
 
-  state.device.sending = false;
-}
+    if (state.device.writeMode === "withoutResponse") {
+      await state.device.writeCharacteristic.writeValueWithoutResponse(data);
+      state.device.sending = false;
+      return true;
+    }
 
-async function sendCoyoteInit() {
-  if (state.device.mode !== "ble" || !state.device.writeCharacteristic) {
-    return;
-  }
+    if (state.device.writeMode === "withResponse") {
+      await writeWithResponseCompatible(data);
+      state.device.sending = false;
+      return true;
+    }
 
-  await writeBle(buildBfPacket());
-  await sleep(80);
-  await writeBle(buildB0PacketV3(0, 0));
-  await sleep(80);
-  await writeBle(buildB0PacketV3(0, 0));
-  log("COYOTE初期化BF/B0を送信しました");
-}
-
-function buildBfPacket() {
-  const aLimit = percentToCoyoteStrength(state.settings.channels.A.limit);
-  const bLimit = percentToCoyoteStrength(state.settings.channels.B.limit);
-  const freqBalanceA = 100;
-  const freqBalanceB = 100;
-  const strengthBalanceA = 100;
-  const strengthBalanceB = 100;
-
-  return new Uint8Array([
-    0xBF,
-    aLimit,
-    bLimit,
-    freqBalanceA,
-    freqBalanceB,
-    strengthBalanceA,
-    strengthBalanceB
-  ]);
-}
-
-function buildB0PacketV3(A, B) {
-  const safeA = clamp(A, 0, 100);
-  const safeB = clamp(B, 0, 100);
-  const strengthA = percentToCoyoteStrength(safeA);
-  const strengthB = percentToCoyoteStrength(safeB);
-  const sequence = nextCoyoteSequence();
-  const modeAbsoluteBoth = 0x0F;
-  const sequenceAndMode = ((sequence & 0x0F) << 4) | modeAbsoluteBoth;
-
-  const aFreq = buildFrequencyFrame(state.settings.channels.A.frequency, safeA);
-  const aWave = buildWaveStrengthFrame(safeA);
-  const bFreq = buildFrequencyFrame(state.settings.channels.B.frequency, safeB);
-  const bWave = buildWaveStrengthFrame(safeB);
-
-  return new Uint8Array([
-    0xB0,
-    sequenceAndMode,
-    strengthA,
-    strengthB,
-    ...aFreq,
-    ...aWave,
-    ...bFreq,
-    ...bWave
-  ]);
-}
-
-function buildFrequencyFrame(frequency, percentValue) {
-  if (percentValue <= 0) {
-    return [10, 10, 10, 10];
-  }
-
-  const encoded = encodeCoyoteFrequency(frequency);
-  return [encoded, encoded, encoded, encoded];
-}
-
-function buildWaveStrengthFrame(percentValue) {
-  if (percentValue <= 0) {
-    return [0, 0, 0, 0];
-  }
-
-  const peak = clamp(Math.round(percentValue), 1, 100);
-  const v1 = clamp(Math.round(peak * 0.55), 1, 100);
-  const v2 = clamp(Math.round(peak * 0.75), 1, 100);
-  const v3 = clamp(Math.round(peak * 0.9), 1, 100);
-  const v4 = clamp(Math.round(peak), 1, 100);
-
-  return [v1, v2, v3, v4];
-}
-
-function percentToCoyoteStrength(percentValue) {
-  return intClamp((clamp(percentValue, 0, 100) / 100) * 200, 0, 200);
-}
-
-function encodeCoyoteFrequency(inputFrequency) {
-  const value = intClamp(inputFrequency, 10, 1000);
-
-  if (value <= 100) {
-    return value;
-  }
-
-  if (value <= 600) {
-    return intClamp((value - 100) / 5 + 100, 101, 200);
-  }
-
-  return intClamp((value - 600) / 10 + 200, 201, 240);
-}
-
-function nextCoyoteSequence() {
-  const seq = state.device.sequence;
-
-  state.device.sequence += 1;
-
-  if (state.device.sequence > 15) {
-    state.device.sequence = 1;
-  }
-
-  return seq;
-}
-
-async function writeBle(packet) {
-  if (!state.device.writeCharacteristic) {
-    return;
-  }
-
-  try {
-    if (typeof state.device.writeCharacteristic.writeValueWithoutResponse === "function") {
-      await state.device.writeCharacteristic.writeValueWithoutResponse(packet);
-      return;
+    try {
+      await state.device.writeCharacteristic.writeValueWithoutResponse(data);
+      state.device.writeMode = "withoutResponse";
+      state.device.sending = false;
+      return true;
+    } catch (errorWithoutResponse) {
+      try {
+        await writeWithResponseCompatible(data);
+        state.device.writeMode = "withResponse";
+        state.device.sending = false;
+        return true;
+      } catch (errorWithResponse) {
+        log(`BLE書込失敗: ${errorWithResponse.message || errorWithoutResponse.message}`);
+        state.device.sending = false;
+        return false;
+      }
     }
   } catch (error) {
-    log(`writeValueWithoutResponse失敗: ${error.message}`);
+    log(`BLE書込例外: ${error.message}`);
+    state.device.sending = false;
+    return false;
+  }
+}
+
+async function writeWithResponseCompatible(data) {
+  if (typeof state.device.writeCharacteristic.writeValueWithResponse === "function") {
+    await state.device.writeCharacteristic.writeValueWithResponse(data);
+    return;
   }
 
   if (typeof state.device.writeCharacteristic.writeValue === "function") {
-    await state.device.writeCharacteristic.writeValue(packet);
+    await state.device.writeCharacteristic.writeValue(data);
     return;
   }
 
-  throw new Error("BLE書き込みAPIが利用できません");
+  throw new Error("writeValueWithResponse/writeValueが使用できません");
+}
+
+function buildPacket(A, B) {
+  const strengthA = coyoteStrengthFromPercent(A);
+  const strengthB = coyoteStrengthFromPercent(B);
+
+  const freqA = coyoteFrequency("A");
+  const freqB = coyoteFrequency("B");
+  const waveA = coyoteWaveStrength("A");
+  const waveB = coyoteWaveStrength("B");
+
+  return new Uint8Array([
+    0xB0,
+    0x0F,
+    strengthA,
+    strengthB,
+    freqA,
+    freqA,
+    freqA,
+    freqA,
+    waveA,
+    waveA,
+    waveA,
+    waveA,
+    freqB,
+    freqB,
+    freqB,
+    freqB,
+    waveB,
+    waveB,
+    waveB,
+    waveB
+  ]);
+}
+
+function coyoteStrengthFromPercent(percentValue) {
+  const safePercent = clamp(percentValue, 0, 100);
+  return intClamp((safePercent / 100) * 200, 0, 200);
+}
+
+function coyoteFrequency(ch) {
+  const cfg = state.settings.channels[ch] || {};
+  return intClamp(cfg.frequency || 100, 10, 240);
+}
+
+function coyoteWaveStrength(ch) {
+  const cfg = state.settings.channels[ch] || {};
+  return intClamp(cfg.pulseWidth || 20, 0, 100);
 }
 
 async function sendZeroRepeated() {
   stopAllOutputLocal();
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     await sendOutputPacket(0, 0);
-    await sleep(45);
+    await sleep(35);
   }
 
   updateLiveDom();
@@ -1972,6 +2039,8 @@ function stopAllOutputLocal() {
   state.output.B = 0;
   state.output.testHold = null;
   state.output.eventPulse = null;
+  state.device.lastPacket = "";
+  updateLiveDom();
 }
 
 function clearTimers() {
