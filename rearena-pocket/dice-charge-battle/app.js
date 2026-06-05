@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-03";
+const VERSION = "20260605-04";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -1164,11 +1164,12 @@ function startGame() {
     currentRoller: "p1",
     lastLoser: null,
     lastWinner: null,
+    pendingContinuousPlayers: [],
     message: `${p1Name} のターンです。\nダイスを振ってください。`,
     resultReason: "",
     players: {
-      p1: { name: p1Name, channel: "A", colorIndex: 1, hp: 100, charge: 0, lastRoll: null },
-      p2: { name: p2Name, channel: "B", colorIndex: 2, hp: 100, charge: 0, lastRoll: null }
+      p1: { name: p1Name, channel: "A", colorIndex: 1, hp: 100, charge: 0, lastRoll: null, continuousActive: false },
+      p2: { name: p2Name, channel: "B", colorIndex: 2, hp: 100, charge: 0, lastRoll: null, continuousActive: false }
     }
   };
 
@@ -1230,10 +1231,13 @@ function revealRound() {
   let winner = null;
   let added = 0;
 
+  g.pendingContinuousPlayers = [];
+
   if (p1.lastRoll === p2.lastRoll) {
     added = intClamp(r.drawCharge, 0, 1000);
     p1.charge += added;
     p2.charge += added;
+    g.pendingContinuousPlayers = ["p1", "p2"];
     g.message = `あいこ！ ${p1.lastRoll} - ${p2.lastRoll}\n両者にCharge +${added}`;
   } else {
     loser = p1.lastRoll < p2.lastRoll ? "p1" : "p2";
@@ -1241,6 +1245,7 @@ function revealRound() {
     added = diff * intClamp(r.chargeMultiplier, 1, 100);
     g.players[loser].charge += added;
     g.players[loser].hp = clamp(g.players[loser].hp - diff * 3, 0, 100);
+    g.pendingContinuousPlayers = [loser];
     g.message = `${g.players[winner].name} の勝ち！ ${p1.lastRoll} - ${p2.lastRoll}\n${g.players[loser].name} にCharge +${added}`;
   }
 
@@ -1255,6 +1260,7 @@ function revealRound() {
     if (r.settlementStim && loser) {
       beginSettlementCountdown(loser);
     } else {
+      activatePendingContinuous();
       endRound();
     }
   };
@@ -1293,7 +1299,24 @@ function startSettlementPulse(loser) {
   playSound("settlement");
   render();
 
-  setAutoTimer(endRound, intClamp(r.settlementDurationMs, 100, 10000) + 250);
+  setAutoTimer(() => {
+    activatePendingContinuous();
+    endRound();
+  }, intClamp(r.settlementDurationMs, 100, 10000) + 250);
+}
+
+function activatePendingContinuous() {
+  if (!state.game || !Array.isArray(state.game.pendingContinuousPlayers)) {
+    return;
+  }
+
+  for (const id of state.game.pendingContinuousPlayers) {
+    if (state.game.players[id]) {
+      state.game.players[id].continuousActive = true;
+    }
+  }
+
+  state.game.pendingContinuousPlayers = [];
 }
 
 function endRound() {
@@ -1505,8 +1528,13 @@ function updateOutput() {
       const active = Date.now() % (onMs + offMs) < onMs;
 
       if (active) {
-        A += chargeToOutput(state.game.players.p1.charge);
-        B += chargeToOutput(state.game.players.p2.charge);
+        if (state.game.players.p1.continuousActive) {
+          A += chargeToOutput(state.game.players.p1.charge);
+        }
+
+        if (state.game.players.p2.continuousActive) {
+          B += chargeToOutput(state.game.players.p2.charge);
+        }
       }
     }
 
