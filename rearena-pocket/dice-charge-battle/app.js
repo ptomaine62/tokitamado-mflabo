@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-07";
+const VERSION = "20260605-08";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -52,6 +52,12 @@ const TIMING = {
   outputTickMs: 50,
   gaugeTickMs: 100
 };
+
+const COUNTDOWN_FIXED_MS = 3000;
+const SETTLEMENT_MIN_OUTPUT_PERCENT = 8;
+const FINAL_SETTLEMENT_MIN_OUTPUT_PERCENT = 12;
+const SETTLEMENT_MIN_DURATION_MS = 700;
+const FINAL_SETTLEMENT_MIN_DURATION_MS = 1500;
 
 const DICE = {
   1: "⚀",
@@ -138,6 +144,8 @@ const state = {
     diceRolling: false,
     rollFaces: { p1: 1, p2: 1 },
     countdownEnd: 0,
+    lastCountdownSecond: null,
+    outputUnskippableUntil: 0,
     skipHandler: null,
     voices: []
   },
@@ -193,6 +201,25 @@ function normalizeSavedSettings() {
     cfg.testPercent = intClamp(cfg.testPercent, 0, 100);
     cfg.pulseWidth = intClamp(cfg.pulseWidth, 1, 100);
     cfg.frequency = intClamp(cfg.frequency, 10, 240);
+  }
+
+  if (state.settings.rules) {
+    const r = state.settings.rules;
+
+    r.settlementCountdownMs = COUNTDOWN_FIXED_MS;
+    r.finalSettlementCountdownMs = COUNTDOWN_FIXED_MS;
+    r.settlementDurationMs = intClamp(
+      r.settlementDurationMs || DEFAULT_SETTINGS.rules.settlementDurationMs,
+      SETTLEMENT_MIN_DURATION_MS,
+      10000
+    );
+    r.finalSettlementDurationMs = intClamp(
+      r.finalSettlementDurationMs || DEFAULT_SETTINGS.rules.finalSettlementDurationMs,
+      FINAL_SETTLEMENT_MIN_DURATION_MS,
+      15000
+    );
+    r.settlementBonusPercent = intClamp(r.settlementBonusPercent, 0, 50);
+    r.finalSettlementBonusPercent = intClamp(r.finalSettlementBonusPercent, 0, 50);
   }
 
   saveSettings();
@@ -638,12 +665,12 @@ function renderRuleSetup() {
           ${secondField("continuousOnMs", "継続ON時間（秒）", r.continuousOnMs, 0.1, 5, 0.1)}
           ${secondField("continuousOffMs", "継続OFF時間（秒）", r.continuousOffMs, 0.1, 10, 0.1)}
           ${checkField("settlementStim", "精算イベント", r.settlementStim)}
-          ${secondField("settlementCountdownMs", "精算カウント（秒）", r.settlementCountdownMs, 0, 10, 0.5)}
+          ${secondField("settlementCountdownMs", "精算カウント（秒）", r.settlementCountdownMs, 3, 3, 1)}
           ${numberField("settlementBonusPercent", "精算ボーナス%", r.settlementBonusPercent, 0, 50, 1)}
-          ${secondField("settlementDurationMs", "精算時間（秒）", r.settlementDurationMs, 0.1, 10, 0.1)}
-          ${secondField("finalSettlementCountdownMs", "最終精算カウント（秒）", r.finalSettlementCountdownMs, 0, 10, 0.5)}
+          ${secondField("settlementDurationMs", "精算時間（秒）", r.settlementDurationMs, 0.7, 10, 0.1)}
+          ${secondField("finalSettlementCountdownMs", "最終精算カウント（秒）", r.finalSettlementCountdownMs, 3, 3, 1)}
           ${numberField("finalSettlementBonusPercent", "最終精算ボーナス%", r.finalSettlementBonusPercent, 0, 50, 1)}
-          ${secondField("finalSettlementDurationMs", "最終精算時間（秒）", r.finalSettlementDurationMs, 0.1, 15, 0.1)}
+          ${secondField("finalSettlementDurationMs", "最終精算時間（秒）", r.finalSettlementDurationMs, 1.5, 15, 0.1)}
         </div>
       </div>
 
@@ -757,7 +784,7 @@ function renderPlaying() {
           ${state.paused ? `<div class="pause-banner">PAUSED：再開するまで進行しません</div>` : ""}
           <div class="phase-hint" id="phase-hint">${escape(phaseHintText())}</div>
           <div class="countdown-line" id="countdown-line">${countdownText()}</div>
-          <div class="message-advance-hint" id="advance-hint">${canAdvance() ? "タップでスキップ" : "自動進行します"}</div>
+          <div class="message-advance-hint" id="advance-hint">${canAdvance() ? "タップでスキップ" : advanceHintText()}</div>
 
           <div class="dice-area">
             ${renderDiceBox("p1")}
@@ -779,6 +806,18 @@ function renderPlaying() {
   `;
 
   updateLiveDom();
+}
+
+function advanceHintText() {
+  if (!state.game) {
+    return "自動進行します";
+  }
+
+  if (state.game.status === STATUS.SETTLEMENT_PULSE || state.game.status === STATUS.FINAL_PULSE) {
+    return "精算出力中：スキップ不可";
+  }
+
+  return "自動進行します";
 }
 
 function renderRoundLabel() {
@@ -1285,6 +1324,8 @@ function startGame() {
   state.output.eventPulse = null;
   state.ui.rotated = false;
   state.ui.countdownEnd = 0;
+  state.ui.lastCountdownSecond = null;
+  state.ui.outputUnskippableUntil = 0;
   state.ui.skipHandler = null;
 
   state.game = {
@@ -1323,6 +1364,7 @@ function rollCurrentDice() {
   state.ui.diceRolling = true;
   state.ui.skipHandler = null;
   state.ui.countdownEnd = 0;
+  state.ui.lastCountdownSecond = null;
 
   setMessage(`${g.players[roller].name} がダイスを振った！`, "normal");
   playSound("roll");
@@ -1401,15 +1443,17 @@ function revealRound() {
 
 function beginSettlementCountdown(loser) {
   const g = state.game;
-  const ms = intClamp(state.settings.rules.settlementCountdownMs, 0, 10000);
+  const ms = COUNTDOWN_FIXED_MS;
 
   clearAutoTimer();
   g.status = STATUS.SETTLEMENT_COUNTDOWN;
   g.message = `${g.players[loser].name} 精算カウントダウン`;
   state.ui.countdownEnd = Date.now() + ms;
+  state.ui.lastCountdownSecond = null;
 
-  setMessage(g.message, "warning");
+  setMessage(g.message, "warning", false);
   render();
+  updateCountdownVoice();
 
   state.ui.skipHandler = () => startSettlementPulse(loser);
   setAutoTimer(state.ui.skipHandler, ms);
@@ -1418,22 +1462,35 @@ function beginSettlementCountdown(loser) {
 function startSettlementPulse(loser) {
   const g = state.game;
   const r = state.settings.rules;
+  const player = g.players[loser];
+  const duration = Math.max(
+    SETTLEMENT_MIN_DURATION_MS,
+    intClamp(r.settlementDurationMs, SETTLEMENT_MIN_DURATION_MS, 10000)
+  );
+  const outputPercent = settlementOutputPercent(
+    loser,
+    r.settlementBonusPercent,
+    SETTLEMENT_MIN_OUTPUT_PERCENT
+  );
 
   clearAutoTimer();
   g.status = STATUS.SETTLEMENT_PULSE;
-  g.message = `${g.players[loser].name} 精算！`;
+  g.message = `${player.name} 精算！`;
   state.ui.countdownEnd = 0;
+  state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
+  state.ui.outputUnskippableUntil = Date.now() + duration + 250;
 
-  startPulse(g.players[loser].channel, r.settlementBonusPercent, r.settlementDurationMs, "精算");
+  startPulse(player.channel, outputPercent, duration, "精算");
   setMessage(g.message, "stim");
   playSound("settlement");
   render();
 
   setAutoTimer(() => {
+    state.ui.outputUnskippableUntil = 0;
     activatePendingContinuous();
     endRound();
-  }, intClamp(r.settlementDurationMs, 100, 10000) + 250);
+  }, duration + 250);
 }
 
 function activatePendingContinuous() {
@@ -1459,6 +1516,7 @@ function endRound() {
   g.lastLoser = null;
   g.lastWinner = null;
   state.ui.countdownEnd = 0;
+  state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
 
   if (!g.suddenDeath && g.round >= g.maxRounds) {
@@ -1495,7 +1553,7 @@ function beginFinalCountdown() {
   const g = state.game;
   const loser = g.players.p1.charge > g.players.p2.charge ? "p1" : "p2";
   const winner = loser === "p1" ? "p2" : "p1";
-  const ms = intClamp(state.settings.rules.finalSettlementCountdownMs, 0, 10000);
+  const ms = COUNTDOWN_FIXED_MS;
 
   clearAutoTimer();
   g.status = STATUS.FINAL_COUNTDOWN;
@@ -1503,9 +1561,11 @@ function beginFinalCountdown() {
   g.lastWinner = winner;
   g.message = `勝者 ${g.players[winner].name}。\n最終精算カウントダウン`;
   state.ui.countdownEnd = Date.now() + ms;
+  state.ui.lastCountdownSecond = null;
 
-  setMessage(g.message, "warning");
+  setMessage(g.message, "warning", false);
   render();
+  updateCountdownVoice();
 
   state.ui.skipHandler = () => startFinalPulse(loser);
   setAutoTimer(state.ui.skipHandler, ms);
@@ -1514,19 +1574,49 @@ function beginFinalCountdown() {
 function startFinalPulse(loser) {
   const g = state.game;
   const r = state.settings.rules;
+  const player = g.players[loser];
+  const duration = Math.max(
+    FINAL_SETTLEMENT_MIN_DURATION_MS,
+    intClamp(r.finalSettlementDurationMs, FINAL_SETTLEMENT_MIN_DURATION_MS, 15000)
+  );
+  const outputPercent = settlementOutputPercent(
+    loser,
+    r.finalSettlementBonusPercent,
+    FINAL_SETTLEMENT_MIN_OUTPUT_PERCENT
+  );
 
   clearAutoTimer();
   g.status = STATUS.FINAL_PULSE;
-  g.message = `${g.players[loser].name} 最終精算！`;
+  g.message = `${player.name} 最終精算！`;
   state.ui.countdownEnd = 0;
+  state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
+  state.ui.outputUnskippableUntil = Date.now() + duration + 350;
 
-  startPulse(g.players[loser].channel, r.finalSettlementBonusPercent, r.finalSettlementDurationMs, "最終精算");
+  startPulse(player.channel, outputPercent, duration, "最終精算");
   setMessage(g.message, "critical");
   playSound("settlement");
   render();
 
-  setAutoTimer(showResult, intClamp(r.finalSettlementDurationMs, 100, 15000) + 350);
+  setAutoTimer(() => {
+    state.ui.outputUnskippableUntil = 0;
+    showResult();
+  }, duration + 350);
+}
+
+function settlementOutputPercent(playerId, bonusPercent, minimumPercent) {
+  if (!state.game || !state.game.players[playerId]) {
+    return 0;
+  }
+
+  const player = state.game.players[playerId];
+  const channel = player.channel;
+  const chargeBase = chargeToOutput(player.charge);
+  const bonus = clamp(bonusPercent, 0, 100);
+  const minimum = clamp(minimumPercent, 0, 100);
+  const raw = Math.max(minimum, chargeBase + bonus);
+
+  return limitChannel(channel, raw);
 }
 
 function showResult() {
@@ -1553,6 +1643,10 @@ function advanceMessage() {
     return;
   }
 
+  if (isOutputUnskippable()) {
+    return;
+  }
+
   const fn = state.ui.skipHandler;
 
   if (fn) {
@@ -1566,7 +1660,22 @@ function canAdvance() {
     return false;
   }
 
+  if (isOutputUnskippable()) {
+    return false;
+  }
+
+  if (
+    state.game.status === STATUS.SETTLEMENT_PULSE ||
+    state.game.status === STATUS.FINAL_PULSE
+  ) {
+    return false;
+  }
+
   return Boolean(state.ui.skipHandler);
+}
+
+function isOutputUnskippable() {
+  return Date.now() < Number(state.ui.outputUnskippableUntil || 0);
 }
 
 function canRoll() {
@@ -1601,7 +1710,38 @@ function countdownText() {
   }
 
   const remain = Math.max(0, state.ui.countdownEnd - Date.now());
-  return `${(remain / 1000).toFixed(1)} 秒`;
+  const sec = Math.ceil(remain / 1000);
+
+  if (sec <= 0) {
+    return "";
+  }
+
+  return String(sec);
+}
+
+function updateCountdownVoice() {
+  if (!state.ui.countdownEnd) {
+    state.ui.lastCountdownSecond = null;
+    return;
+  }
+
+  if (!state.settings.audio.speechEnabled || !window.speechSynthesis) {
+    return;
+  }
+
+  const remain = Math.max(0, state.ui.countdownEnd - Date.now());
+  const sec = Math.ceil(remain / 1000);
+
+  if (sec <= 0 || sec > 3) {
+    return;
+  }
+
+  if (state.ui.lastCountdownSecond === sec) {
+    return;
+  }
+
+  state.ui.lastCountdownSecond = sec;
+  speak(String(sec));
 }
 
 function startDiceAnimation(roller) {
@@ -1622,11 +1762,13 @@ function startDiceAnimation(roller) {
   }, TIMING.diceMs);
 }
 
-function startPulse(channel, bonusPercent, durationMs, reason) {
+function startPulse(channel, percentValue, durationMs, reason) {
+  const safePercent = limitChannel(channel, percentValue);
+
   state.output.eventPulse = {
     channel,
-    bonusPercent: clamp(bonusPercent, 0, 100),
-    until: Date.now() + intClamp(durationMs, 100, 15000),
+    percent: safePercent,
+    until: Date.now() + intClamp(durationMs, 50, 15000),
     reason
   };
 }
@@ -1682,8 +1824,13 @@ function updateOutput() {
 
     if (pulse) {
       if (Date.now() <= pulse.until) {
-        if (pulse.channel === "A") A += pulse.bonusPercent;
-        if (pulse.channel === "B") B += pulse.bonusPercent;
+        if (pulse.channel === "A") {
+          A = Math.max(A, Number(pulse.percent || 0));
+        }
+
+        if (pulse.channel === "B") {
+          B = Math.max(B, Number(pulse.percent || 0));
+        }
       } else {
         state.output.eventPulse = null;
       }
@@ -1721,6 +1868,8 @@ function updateLiveDom() {
     countdown.textContent = countdownText();
   }
 
+  updateCountdownVoice();
+
   const phaseHint = document.getElementById("phase-hint");
 
   if (phaseHint) {
@@ -1730,7 +1879,7 @@ function updateLiveDom() {
   const advanceHint = document.getElementById("advance-hint");
 
   if (advanceHint) {
-    advanceHint.textContent = canAdvance() ? "タップでスキップ" : "自動進行します";
+    advanceHint.textContent = canAdvance() ? "タップでスキップ" : advanceHintText();
     advanceHint.classList.toggle("muted-hint", !canAdvance());
   }
 }
@@ -2040,6 +2189,7 @@ function stopAllOutputLocal() {
   state.output.testHold = null;
   state.output.eventPulse = null;
   state.device.lastPacket = "";
+  state.ui.outputUnskippableUntil = 0;
   updateLiveDom();
 }
 
@@ -2049,6 +2199,7 @@ function clearTimers() {
   state.timers.dice = null;
   state.ui.skipHandler = null;
   state.ui.countdownEnd = 0;
+  state.ui.lastCountdownSecond = null;
 }
 
 function clearAutoTimer() {
@@ -2370,11 +2521,9 @@ function speak(text) {
 
   const normalized = String(text || "").replace(/\n/g, "。");
 
-  if (!normalized || normalized === state.audio.lastSpeech) {
+  if (!normalized) {
     return;
   }
-
-  state.audio.lastSpeech = normalized;
 
   try {
     window.speechSynthesis.cancel();
