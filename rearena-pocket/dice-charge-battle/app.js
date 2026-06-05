@@ -55,6 +55,18 @@ const GAME_STATUS = {
   RESULT: "RESULT"
 };
 
+const UI_TIMING = {
+  normalMessageHoldMs: 3600,
+  stimMessageHoldMs: 4200,
+  criticalMessageHoldMs: 4700,
+  releaseMessageHoldMs: 5200,
+  resultMessageHoldMs: 5200,
+  messageIntroMs: 700,
+  diceAnimationMs: 720,
+  diceAnimationIntervalMs: 55,
+  gaugeAnimationMs: 520
+};
+
 const DICE_UNICODE = {
   1: "⚀",
   2: "⚁",
@@ -172,6 +184,7 @@ function boot() {
   bindGlobalSafety();
   startOutputLoop();
   render();
+  scrollTopSoon();
   logLocal("起動しました");
 }
 
@@ -191,12 +204,15 @@ function saveSettings() {
 function deepMerge(base, patch) {
   for (const key of Object.keys(patch || {})) {
     if (patch[key] && typeof patch[key] === "object" && !Array.isArray(patch[key])) {
-      if (!base[key]) base[key] = {};
+      if (!base[key]) {
+        base[key] = {};
+      }
       deepMerge(base[key], patch[key]);
     } else {
       base[key] = patch[key];
     }
   }
+
   return base;
 }
 
@@ -218,7 +234,11 @@ function bindGlobalSafety() {
 
 function clamp(value, min, max) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return min;
+
+  if (!Number.isFinite(n)) {
+    return min;
+  }
+
   return Math.max(min, Math.min(max, n));
 }
 
@@ -241,12 +261,19 @@ function escapeHtml(value) {
 
 function formatPercent(value) {
   const n = Number(value || 0);
-  if (Math.abs(n - Math.round(n)) < 0.05) return `${Math.round(n)}%`;
+
+  if (Math.abs(n - Math.round(n)) < 0.05) {
+    return `${Math.round(n)}%`;
+  }
+
   return `${n.toFixed(1)}%`;
 }
 
 function logLocal(message) {
-  if (!message) return;
+  if (!message) {
+    return;
+  }
+
   const stamp = new Date().toLocaleTimeString("ja-JP", { hour12: false });
   state.log.unshift(`${stamp} ${message}`);
   state.log = state.log.slice(0, 80);
@@ -257,10 +284,15 @@ function toast(message) {
   el.className = "toast";
   el.textContent = message;
   toastRoot.appendChild(el);
-  setTimeout(() => el.remove(), 2400);
+
+  setTimeout(() => {
+    el.remove();
+  }, 2400);
 }
 
 function setPhase(phase) {
+  const oldPhase = state.phase;
+
   state.previousPhase = state.phase;
   state.phase = phase;
 
@@ -270,13 +302,50 @@ function setPhase(phase) {
   }
 
   render();
+
+  if (oldPhase !== phase) {
+    scrollTopSoon();
+  }
+}
+
+function scrollTopSoon() {
+  requestAnimationFrame(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+
+    if (document.scrollingElement) {
+      document.scrollingElement.scrollTop = 0;
+      document.scrollingElement.scrollLeft = 0;
+    }
+
+    if (appShell) {
+      appShell.scrollTop = 0;
+      appShell.scrollLeft = 0;
+    }
+
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+
+      if (document.scrollingElement) {
+        document.scrollingElement.scrollTop = 0;
+        document.scrollingElement.scrollLeft = 0;
+      }
+
+      if (appShell) {
+        appShell.scrollTop = 0;
+        appShell.scrollLeft = 0;
+      }
+    });
+  });
 }
 
 function setMessage(message, tone = "normal", speech = true) {
   state.ui.message = message;
   state.ui.messageTone = tone;
   logLocal(message);
-  if (speech) speak(message);
+
+  if (speech) {
+    speak(message);
+  }
 }
 
 function applyRotation() {
@@ -287,19 +356,45 @@ function render() {
   state.ui.lastRenderAt = nowMs();
   applyRotation();
 
-  if (state.phase === PHASE.ACCESS) return renderAccess();
-  if (state.phase === PHASE.DISCLAIMER) return renderDisclaimer();
-  if (state.phase === PHASE.CONNECT) return renderConnect();
-  if (state.phase === PHASE.CHANNEL_TEST) return renderChannelTest();
-  if (state.phase === PHASE.RULE_SETUP) return renderRuleSetup();
-  if (state.phase === PHASE.PLAYING) return renderPlaying();
-  if (state.phase === PHASE.RESULT) return renderResult();
-  if (state.phase === PHASE.SAFE_LOCKED) return renderSafeLocked();
+  if (state.phase === PHASE.ACCESS) {
+    return renderAccess();
+  }
+
+  if (state.phase === PHASE.DISCLAIMER) {
+    return renderDisclaimer();
+  }
+
+  if (state.phase === PHASE.CONNECT) {
+    return renderConnect();
+  }
+
+  if (state.phase === PHASE.CHANNEL_TEST) {
+    return renderChannelTest();
+  }
+
+  if (state.phase === PHASE.RULE_SETUP) {
+    return renderRuleSetup();
+  }
+
+  if (state.phase === PHASE.PLAYING) {
+    return renderPlaying();
+  }
+
+  if (state.phase === PHASE.RESULT) {
+    return renderResult();
+  }
+
+  if (state.phase === PHASE.SAFE_LOCKED) {
+    return renderSafeLocked();
+  }
+
+  return renderAccess();
 }
 
 function header(title, subtitle = "", options = {}) {
   const rotate = options.rotate === true;
   const menu = options.menu === true;
+
   return `
     <header class="header">
       <div class="header-main">
@@ -307,21 +402,38 @@ function header(title, subtitle = "", options = {}) {
         <h1 class="header-title">${escapeHtml(title)}</h1>
         ${subtitle ? `<p class="header-sub">${escapeHtml(subtitle)}</p>` : ""}
       </div>
+
       <div class="header-actions">
         <div class="status-strip">
           <div class="pill">${deviceStatusText()}</div>
           <div class="pill">v${VERSION}</div>
         </div>
-        ${rotate ? `<button class="rotate-fab header-chip" data-action="rotate" aria-label="180度回転">↻</button>` : ""}
-        ${menu ? `<button class="btn icon ghost" data-action="pause">⏸</button>` : ""}
+
+        ${
+          rotate
+            ? `<button class="rotate-fab header-chip" data-action="rotate" aria-label="180度回転">↻</button>`
+            : ""
+        }
+
+        ${
+          menu
+            ? `<button class="btn icon ghost" data-action="pause" aria-label="一時停止">⏸</button>`
+            : ""
+        }
       </div>
     </header>
   `;
 }
 
 function deviceStatusText() {
-  if (state.device.mode === "simulation") return `<span class="dot connected">●</span>確認モード`;
-  if (state.device.connected) return `<span class="dot connected">●</span>低周波デバイス接続`;
+  if (state.device.mode === "simulation") {
+    return `<span class="dot connected">●</span>確認モード`;
+  }
+
+  if (state.device.connected) {
+    return `<span class="dot connected">●</span>低周波デバイス接続`;
+  }
+
   return `<span class="dot disconnected">●</span>未接続`;
 }
 
@@ -332,10 +444,12 @@ function renderAccess() {
         <div class="brand-kicker">${PRODUCT_FAMILY}</div>
         <h1 class="brand-title">DICE<br>CHARGE<br>BATTLE</h1>
         <div class="brand-ja">アクセスコード</div>
+
         <p class="notice">
           BOOTH購入者向けのAccess Codeを入力してください。<br>
           認証前は安全ロック解除・ゲーム開始・接続画面への遷移はできません。
         </p>
+
         <div class="form-stack">
           <label class="field-label">Access Code</label>
           <input id="access-code" class="input big-input" autocomplete="off" inputmode="latin" placeholder="DCB-..." />
@@ -350,9 +464,12 @@ function renderDisclaimer() {
   view.innerHTML = `
     <section class="screen">
       ${header(PRODUCT_NAME, "WARNING & DISCLAIMER")}
+
       <div class="card warning-card">
         <h2>安全確認と同意</h2>
+
         <p>本アプリは低周波BLEデバイスを制御します。必ず低い出力から開始してください。</p>
+
         <ul class="safety-list">
           <li>体調不良、違和感、痛み、しびれ等を感じた場合は直ちに使用を中止してください。</li>
           <li>心臓疾患、医療機器、ペースメーカー等に関係する方は使用しないでください。</li>
@@ -360,10 +477,12 @@ function renderDisclaimer() {
           <li>A/Bチャンネルテスト完了まではゲームを開始できません。</li>
           <li>使用は自己責任で、同意できる場合のみ起動してください。</li>
         </ul>
+
         <label class="check-row">
           <input id="disclaimer-check" type="checkbox" />
           <span>上記の内容を確認し、自己責任で使用します。</span>
         </label>
+
         <button class="btn danger wide" data-action="accept-disclaimer">同意して接続へ</button>
       </div>
     </section>
@@ -374,10 +493,12 @@ function renderConnect() {
   view.innerHTML = `
     <section class="screen">
       ${header(PRODUCT_NAME, "低周波デバイス接続")}
+
       <div class="grid two connect-grid">
         <div class="card game-card">
           <h2>接続</h2>
           <p class="muted">Web Bluetoothで低周波デバイスへ直接接続します。HTTPS環境と対応ブラウザが必要です。</p>
+
           <div class="button-stack">
             <button class="btn primary wide" data-action="connect-known">かんたん接続</button>
             <button class="btn cyan wide" data-action="connect-preferred">推奨IDから探す</button>
@@ -385,12 +506,14 @@ function renderConnect() {
             <button class="btn danger wide" data-action="disconnect">切断</button>
           </div>
         </div>
+
         <div class="card game-card">
           <h2>確認モード</h2>
           <p class="muted">実機へBLE送信せず、画面・音・進行・出力ゲージだけ確認できます。</p>
           <button class="btn orange wide" data-action="connect-simulation">低周波デバイスなし確認モード</button>
         </div>
       </div>
+
       ${renderLog()}
     </section>
   `;
@@ -399,19 +522,24 @@ function renderConnect() {
 function renderChannelTest() {
   const A = state.settings.channels.A;
   const B = state.settings.channels.B;
+
   view.innerHTML = `
     <section class="screen">
       ${header(PRODUCT_NAME, "A/Bチャンネル設定")}
+
       <div class="grid two">
         ${renderChannelCard("A", A, "P1 / チャンネルA")}
         ${renderChannelCard("B", B, "P2 / チャンネルB")}
       </div>
+
       <div class="card">
         <p class="muted">テストボタンは押している間だけ出力します。指を離す、キャンセル、画面外へ出ると0%になります。</p>
+
         <button class="btn primary wide" data-action="go-rule-setup" ${A.tested && B.tested ? "" : "disabled"}>
           A/Bテスト完了：ゲーム設定へ
         </button>
       </div>
+
       ${renderFooterSafe(false)}
     </section>
   `;
@@ -421,17 +549,20 @@ function renderChannelCard(ch, cfg, title) {
   return `
     <div class="card channel-card player-tone-${ch === "A" ? "1" : "2"}">
       <h2>${escapeHtml(title)}</h2>
+
       <div class="form-grid">
         ${rangeInput(`limit-${ch}`, "出力リミット", cfg.limit, 0, 100, 1, "%")}
         ${rangeInput(`test-${ch}`, "テストの強さ", cfg.testPercent, 0, 100, 1, "%")}
         ${rangeInput(`width-${ch}`, "パルス幅", cfg.pulseWidth, 1, 60, 1, "μs")}
         ${rangeInput(`freq-${ch}`, "周波数", cfg.frequency, 1, 200, 1, "Hz")}
       </div>
+
       <button
         class="btn big ${cfg.tested ? "safe" : "primary"} test-hold"
         data-test-channel="${ch}">
         ${cfg.tested ? "✓ テスト済み" : "押してテスト"}
       </button>
+
       <div class="mini-meter">
         <div class="mini-meter-fill" style="width:${escapeHtml(state.outputs[ch])}%"></div>
       </div>
@@ -453,18 +584,30 @@ function renderRuleSetup() {
   const r = state.settings.rules;
   const p = state.settings.players;
   const audio = state.settings.audio;
+
   view.innerHTML = `
     <section class="screen">
       ${header(PRODUCT_NAME, "ゲーム設定")}
+
       <div class="card">
         <h2>プレイヤー</h2>
+
         <div class="grid two">
-          <label class="field-label">P1名前<input class="input" id="p1-name" value="${escapeHtml(p.p1.name)}"></label>
-          <label class="field-label">P2名前<input class="input" id="p2-name" value="${escapeHtml(p.p2.name)}"></label>
+          <label class="field-label">
+            P1名前
+            <input class="input" id="p1-name" value="${escapeHtml(p.p1.name)}">
+          </label>
+
+          <label class="field-label">
+            P2名前
+            <input class="input" id="p2-name" value="${escapeHtml(p.p2.name)}">
+          </label>
         </div>
       </div>
+
       <div class="card">
         <h2>ルール</h2>
+
         <div class="form-grid setup-grid">
           ${numberField("rounds", "ラウンド数", r.rounds, 3, 30, 1)}
           ${numberField("chargeMultiplier", "出目差チャージ", r.chargeMultiplier, 1, 20, 1)}
@@ -483,6 +626,7 @@ function renderRuleSetup() {
           ${checkField("speechEnabled", "音声読み上げ", audio.speechEnabled, "audio")}
         </div>
       </div>
+
       <div class="footer-safe">
         <button class="btn ghost" data-action="back-channel-test">A/B設定</button>
         <button class="btn primary" data-action="start-game">ゲーム開始</button>
@@ -512,45 +656,140 @@ function checkField(key, label, checked, section = "rules") {
 
 function renderPlaying() {
   const g = state.game;
+
   if (!g) {
     setPhase(PHASE.RULE_SETUP);
     return;
   }
 
+  const disabled = !canRoll();
+
   view.innerHTML = `
     <section class="screen playing-screen">
-      ${header(PRODUCT_NAME, "DICE CHARGE BATTLE", { rotate: true, menu: true })}
+      ${header("DICE CHARGE BATTLE", g.message || "", { rotate: true, menu: true })}
+
       <div class="battle-main">
         <div class="desktop-hud play-layout">
           ${renderBattlePlayerCard("p1")}
           ${renderBattlePlayerCard("p2")}
         </div>
+
         <div class="mobile-hud">
           ${renderMiniHud("p1")}
           ${renderMiniHud("p2")}
         </div>
-        <div class="card game-center tone-${escapeHtml(state.ui.messageTone)}">
+
+        <section class="card game-center ${isMessageAdvanceReady() ? "message-hold-clickable" : ""} tone-${escapeHtml(state.ui.messageTone)}" data-action="advance-message">
           <div class="round-label">
-            ${g.suddenDeath ? "SUDDEN DEATH" : `ROUND ${g.round} / ${g.maxRounds}`}
+            ${renderRoundLabel()}
           </div>
-          ${renderMessageBox(state.ui.message || g.message)}
-          ${state.paused ? `<div class="pause-banner">PAUSED</div>` : ""}
-          <div class="phase-hint">${phaseHint()}</div>
+
+          ${renderMessageBox(state.ui.message || g.message || "", state.ui.messageTone || "normal")}
+
+          ${state.paused ? `<div class="pause-banner">PAUSED：再開するまで進行しません</div>` : ""}
+
+          ${renderPhaseHint()}
+          ${renderMessageAdvanceHint()}
+
           <div class="dice-area">
             ${renderDiceBox("p1")}
             ${renderDiceBox("p2")}
           </div>
+
           <div class="battle-actions">
-            <button class="btn big primary" data-action="roll-dice" ${canRoll() ? "" : "disabled"}>ふる</button>
-            <button class="btn ghost" data-action="advance-message">タップでスキップ</button>
+            <button class="btn primary big" data-action="roll-dice" ${disabled ? "disabled" : ""}>
+              🎲 ふる
+            </button>
           </div>
-        </div>
+        </section>
+
         <div class="log-section-desktop">
           ${renderLog()}
         </div>
       </div>
-      ${renderFooterSafe(true)}
+
+      ${renderGameFooter()}
     </section>
+  `;
+}
+
+function renderRoundLabel() {
+  const g = state.game;
+
+  if (!g) {
+    return "";
+  }
+
+  if (g.suddenDeath) {
+    return `<span class="round-main sudden">SUDDEN DEATH</span>`;
+  }
+
+  return `
+    <span class="round-main">ROUND ${escapeHtml(g.round)} / ${escapeHtml(g.maxRounds)}</span>
+    <span class="round-sub">CHARGE BATTLE</span>
+  `;
+}
+
+function renderPhaseHint() {
+  const g = state.game;
+
+  if (!g) {
+    return "";
+  }
+
+  let text = "";
+
+  if (g.status === GAME_STATUS.WAIT_P1) {
+    text = `${g.players.p1.name} のロール待ち`;
+  } else if (g.status === GAME_STATUS.WAIT_P2) {
+    text = `${g.players.p2.name} のロール待ち`;
+  } else if (g.status === GAME_STATUS.ROLLING_P1 || g.status === GAME_STATUS.ROLLING_P2) {
+    text = "ダイスロール中";
+  } else if (g.status === GAME_STATUS.REVEAL) {
+    text = "結果表示中";
+  } else if (g.status === GAME_STATUS.SETTLEMENT_COUNTDOWN) {
+    text = "精算カウントダウン";
+  } else if (g.status === GAME_STATUS.SETTLEMENT_PULSE) {
+    text = "精算出力中";
+  } else if (g.status === GAME_STATUS.FINAL_COUNTDOWN) {
+    text = "最終精算カウントダウン";
+  } else if (g.status === GAME_STATUS.FINAL_PULSE) {
+    text = "最終精算出力中";
+  } else {
+    text = "進行中";
+  }
+
+  return `<div class="phase-hint">${escapeHtml(text)}</div>`;
+}
+
+function isMessageAdvanceReady() {
+  if (!state.game || state.paused) {
+    return false;
+  }
+
+  return (
+    state.game.status === GAME_STATUS.REVEAL ||
+    state.game.status === GAME_STATUS.SETTLEMENT_COUNTDOWN ||
+    state.game.status === GAME_STATUS.ROUND_END ||
+    state.game.status === GAME_STATUS.FINAL_COUNTDOWN
+  );
+}
+
+function renderMessageAdvanceHint() {
+  if (!isMessageAdvanceReady()) {
+    return `<div class="message-advance-hint muted-hint">自動進行します</div>`;
+  }
+
+  return `<div class="message-advance-hint">タップでスキップ</div>`;
+}
+
+function renderGameFooter() {
+  return `
+    <footer class="game-footer">
+      <button class="btn ghost footer-btn" data-action="give-up">ギブアップ</button>
+      <button class="btn ghost footer-btn" data-action="pause">${state.paused ? "再開" : "一時停止"}</button>
+      <button class="btn danger footer-btn emergency" data-action="emergency-stop">緊急停止</button>
+    </footer>
   `;
 }
 
@@ -558,28 +797,38 @@ function renderBattlePlayerCard(id) {
   const p = getPlayer(id);
   const out = getPlayerOutput(id);
   const chargeMax = Math.max(100, state.game.players.p1.charge, state.game.players.p2.charge);
+  const isActive = state.game.currentRoller === id;
+  const isLoser = state.game.lastLoser === id;
+  const isWinner = state.game.lastWinner === id;
+
   return `
-    <div class="card player-battle-card player-tone-${p.colorIndex}">
-      <div class="player-head">
+    <section class="battle-player-card card player-tone-${p.colorIndex} ${isActive ? "is-active" : ""} ${isLoser ? "is-loser" : ""} ${isWinner ? "is-winner" : ""}">
+      <div class="battle-player-top">
         <div>
           <div class="player-id">${p.id.toUpperCase()} / CH ${p.channel}</div>
-          <h2>${escapeHtml(p.name)}</h2>
+          <h2 class="battle-player-name">${escapeHtml(p.name)}</h2>
         </div>
-        <div class="charge-big">${Math.round(p.charge)}</div>
+
+        <div class="battle-charge-number">${Math.round(p.charge)}</div>
       </div>
-      ${gauge("Charge", p.charge, chargeMax, "charge")}
-      ${gauge("OUT", out, 100, "out")}
-      <div class="player-stats">
-        <span>LIMIT ${state.settings.channels[p.channel].limit}%</span>
-        <span>ROLL ${p.lastRoll || "-"}</span>
+
+      <div class="battle-gauge-stack">
+        ${gauge("Charge", p.charge, chargeMax, "charge")}
+        ${gauge("OUT", out, 100, "out")}
       </div>
-    </div>
+
+      <div class="battle-player-meta">
+        <span>LIMIT ${escapeHtml(state.settings.channels[p.channel].limit)}%</span>
+        <span>DICE ${p.lastRoll || "-"}</span>
+      </div>
+    </section>
   `;
 }
 
 function renderMiniHud(id) {
   const p = getPlayer(id);
   const out = getPlayerOutput(id);
+
   return `
     <div class="mini-hud player-tone-${p.colorIndex}">
       <b>${escapeHtml(p.name)}</b>
@@ -599,27 +848,65 @@ function getPlayerOutput(id) {
 
 function gauge(label, value, max, cls) {
   const pct = clamp((Number(value || 0) / Math.max(1, Number(max || 1))) * 100, 0, 100);
+
   return `
     <div class="gauge-row">
-      <div class="gauge-label"><span>${escapeHtml(label)}</span><b>${formatPercent(value)}</b></div>
-      <div class="bar ${escapeHtml(cls)}"><div class="bar-fill" style="width:${pct}%"></div></div>
+      <div class="gauge-label">
+        <span>${escapeHtml(label)}</span>
+        <b>${formatPercent(value)}</b>
+      </div>
+
+      <div class="bar ${escapeHtml(cls)}">
+        <div class="bar-fill" style="width:${pct}%"></div>
+      </div>
     </div>
   `;
 }
 
-function renderMessageBox(message) {
-  const lines = String(message || "").split("\n").filter(Boolean).slice(-3);
+function renderMessageBox(message, tone = "normal") {
+  const lines = String(message || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(-3);
+
+  while (lines.length < 1) {
+    lines.push("");
+  }
+
   return `
-    <div class="game-message-box">
-      ${lines.map((line, index) => `<div class="game-message-line ${index ? "sub" : ""}">${escapeHtml(line)}</div>`).join("")}
+    <div class="game-message-box tone-${escapeHtml(tone)}">
+      ${lines
+        .map((line, index) => {
+          const cls = index === 0 ? "" : index === 1 ? "sub" : "detail";
+          return `<div class="game-message-line ${cls}">${colorizePlayerNames(line)}</div>`;
+        })
+        .join("")}
     </div>
   `;
+}
+
+function colorizePlayerNames(text) {
+  let html = escapeHtml(text);
+
+  if (!state.game) {
+    return html;
+  }
+
+  const p1Name = escapeHtml(state.game.players.p1.name);
+  const p2Name = escapeHtml(state.game.players.p2.name);
+
+  html = html.split(p1Name).join(`<span class="player-name-inline tone-text-1">${p1Name}</span>`);
+  html = html.split(p2Name).join(`<span class="player-name-inline tone-text-2">${p2Name}</span>`);
+
+  return html;
 }
 
 function renderDiceBox(id) {
   const p = getPlayer(id);
   const face = state.ui.diceAnimation ? state.ui.rollFaces[id] : p.lastRoll || 1;
   const active = state.game.currentRoller === id;
+
   return `
     <div class="dice-box ${active ? "active" : ""} player-tone-${p.colorIndex}">
       <div class="dice-owner">${escapeHtml(p.name)}</div>
@@ -629,29 +916,21 @@ function renderDiceBox(id) {
   `;
 }
 
-function phaseHint() {
-  const g = state.game;
-  if (!g) return "";
-  if (g.status === GAME_STATUS.WAIT_P1) return `${g.players.p1.name} がダイスを振ります`;
-  if (g.status === GAME_STATUS.WAIT_P2) return `${g.players.p2.name} がダイスを振ります`;
-  if (g.status === GAME_STATUS.REVEAL) return "出目を比較しています";
-  if (g.status === GAME_STATUS.SETTLEMENT_COUNTDOWN) return "精算カウントダウン";
-  if (g.status === GAME_STATUS.SETTLEMENT_PULSE) return "精算出力中";
-  if (g.status === GAME_STATUS.FINAL_COUNTDOWN) return "最終精算カウントダウン";
-  if (g.status === GAME_STATUS.FINAL_PULSE) return "最終精算出力中";
-  return "安全にプレイしてください";
-}
-
-function canRoll() {
-  if (state.paused || !state.game) return false;
-  return state.game.status === GAME_STATUS.WAIT_P1 || state.game.status === GAME_STATUS.WAIT_P2;
-}
-
 function renderFooterSafe(showGameControls) {
   return `
     <div class="footer-safe">
-      ${showGameControls ? `<button class="btn ghost" data-action="give-up">ギブアップ</button>` : `<button class="btn ghost" data-action="back-connect">接続へ</button>`}
-      ${showGameControls ? `<button class="btn ghost" data-action="pause">${state.paused ? "再開" : "一時停止"}</button>` : `<button class="btn ghost" data-action="zero-output">出力0%</button>`}
+      ${
+        showGameControls
+          ? `<button class="btn ghost" data-action="give-up">ギブアップ</button>`
+          : `<button class="btn ghost" data-action="back-connect">接続へ</button>`
+      }
+
+      ${
+        showGameControls
+          ? `<button class="btn ghost" data-action="pause">${state.paused ? "再開" : "一時停止"}</button>`
+          : `<button class="btn ghost" data-action="zero-output">出力0%</button>`
+      }
+
       <button class="btn danger" data-action="emergency-stop">緊急停止</button>
     </div>
   `;
@@ -661,24 +940,29 @@ function renderResult() {
   const g = state.game;
   const p1 = g?.players?.p1 || { name: "P1", charge: 0 };
   const p2 = g?.players?.p2 || { name: "P2", charge: 0 };
+
   view.innerHTML = `
     <section class="screen">
       ${header(PRODUCT_NAME, "RESULT")}
+
       <div class="card result-card">
         <h1 class="result-title">RESULT</h1>
         <p class="result-reason">${escapeHtml(g?.resultReason || "")}</p>
+
         <div class="grid two">
           <div class="score-card player-tone-1">
             <h2>${escapeHtml(p1.name)}</h2>
             <div class="score-number">${Math.round(p1.charge)}</div>
             <p>Charge</p>
           </div>
+
           <div class="score-card player-tone-2">
             <h2>${escapeHtml(p2.name)}</h2>
             <div class="score-number">${Math.round(p2.charge)}</div>
             <p>Charge</p>
           </div>
         </div>
+
         <div class="button-row">
           <button class="btn primary" data-action="rematch">もう一度遊ぶ</button>
           <button class="btn ghost" data-action="result-settings">設定へ戻る</button>
@@ -695,6 +979,7 @@ function renderSafeLocked() {
         <h1 class="safe-title">SAFE STOP</h1>
         <p class="safe-reason">${escapeHtml(state.safeReason || "安全停止しました")}</p>
         <p class="muted">A/B出力は0%にリセットされました。Access Code未認証の場合は解除できません。</p>
+
         <div class="button-stack">
           <button class="btn danger wide" data-action="zero-output">出力0%を再送信</button>
           <button class="btn primary wide" data-action="unlock-safe">安全確認して復帰</button>
@@ -716,33 +1001,105 @@ function renderLog() {
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
-  if (!button) return;
+
+  if (!button) {
+    return;
+  }
+
   const action = button.dataset.action;
 
   await unlockAudio();
 
-  if (action === "check-access") return checkAccess();
-  if (action === "accept-disclaimer") return acceptDisclaimer();
-  if (action === "connect-known") return connectKnown();
-  if (action === "connect-preferred") return connectPreferred();
-  if (action === "connect-manual") return connectManual();
-  if (action === "connect-simulation") return connectSimulation();
-  if (action === "disconnect") return disconnectDevice(true);
-  if (action === "go-rule-setup") return setPhase(PHASE.RULE_SETUP);
-  if (action === "back-channel-test") return setPhase(PHASE.CHANNEL_TEST);
-  if (action === "back-connect") return setPhase(PHASE.CONNECT);
-  if (action === "start-game") return startGame();
-  if (action === "roll-dice") return rollCurrentDice();
-  if (action === "advance-message") return advanceMessage();
-  if (action === "pause") return togglePause();
-  if (action === "give-up") return giveUp();
-  if (action === "rotate") return toggleRotate();
-  if (action === "emergency-stop") return safeStop("緊急停止ボタンが押されました");
-  if (action === "zero-output") return sendZeroRepeated();
-  if (action === "unlock-safe") return unlockSafe();
-  if (action === "reset-access") return resetAccess();
-  if (action === "rematch") return startGame();
-  if (action === "result-settings") return setPhase(PHASE.RULE_SETUP);
+  if (action === "check-access") {
+    return checkAccess();
+  }
+
+  if (action === "accept-disclaimer") {
+    return acceptDisclaimer();
+  }
+
+  if (action === "connect-known") {
+    return connectKnown();
+  }
+
+  if (action === "connect-preferred") {
+    return connectPreferred();
+  }
+
+  if (action === "connect-manual") {
+    return connectManual();
+  }
+
+  if (action === "connect-simulation") {
+    return connectSimulation();
+  }
+
+  if (action === "disconnect") {
+    return disconnectDevice(true);
+  }
+
+  if (action === "go-rule-setup") {
+    return setPhase(PHASE.RULE_SETUP);
+  }
+
+  if (action === "back-channel-test") {
+    return setPhase(PHASE.CHANNEL_TEST);
+  }
+
+  if (action === "back-connect") {
+    return setPhase(PHASE.CONNECT);
+  }
+
+  if (action === "start-game") {
+    return startGame();
+  }
+
+  if (action === "roll-dice") {
+    event.stopPropagation();
+    return rollCurrentDice();
+  }
+
+  if (action === "advance-message") {
+    return advanceMessage();
+  }
+
+  if (action === "pause") {
+    return togglePause();
+  }
+
+  if (action === "give-up") {
+    return giveUp();
+  }
+
+  if (action === "rotate") {
+    return toggleRotate();
+  }
+
+  if (action === "emergency-stop") {
+    return safeStop("緊急停止ボタンが押されました");
+  }
+
+  if (action === "zero-output") {
+    return sendZeroRepeated();
+  }
+
+  if (action === "unlock-safe") {
+    return unlockSafe();
+  }
+
+  if (action === "reset-access") {
+    return resetAccess();
+  }
+
+  if (action === "rematch") {
+    return startGame();
+  }
+
+  if (action === "result-settings") {
+    return setPhase(PHASE.RULE_SETUP);
+  }
+
+  return undefined;
 });
 
 document.addEventListener("input", (event) => {
@@ -751,21 +1108,42 @@ document.addEventListener("input", (event) => {
   if (el.dataset.range) {
     const [kind, ch] = el.dataset.range.split("-");
     const cfg = state.settings.channels[ch];
-    if (!cfg) return;
-    if (kind === "limit") cfg.limit = intClamp(el.value, 0, 100);
-    if (kind === "test") cfg.testPercent = intClamp(el.value, 0, 100);
-    if (kind === "width") cfg.pulseWidth = intClamp(el.value, 1, 60);
-    if (kind === "freq") cfg.frequency = intClamp(el.value, 1, 200);
+
+    if (!cfg) {
+      return;
+    }
+
+    if (kind === "limit") {
+      cfg.limit = intClamp(el.value, 0, 100);
+    }
+
+    if (kind === "test") {
+      cfg.testPercent = intClamp(el.value, 0, 100);
+    }
+
+    if (kind === "width") {
+      cfg.pulseWidth = intClamp(el.value, 1, 60);
+    }
+
+    if (kind === "freq") {
+      cfg.frequency = intClamp(el.value, 1, 200);
+    }
+
     cfg.tested = false;
     saveSettings();
+
     const valueEl = document.getElementById(`${el.dataset.range}-value`);
-    if (valueEl) valueEl.textContent = el.value + (kind === "freq" ? "Hz" : kind === "width" ? "μs" : "%");
+
+    if (valueEl) {
+      valueEl.textContent = el.value + (kind === "freq" ? "Hz" : kind === "width" ? "μs" : "%");
+    }
   }
 
   if (el.dataset.rule) {
     const key = el.dataset.rule;
     const min = Number(el.min);
     const max = Number(el.max);
+
     state.settings.rules[key] = intClamp(el.value, min, max);
     saveSettings();
   }
@@ -789,15 +1167,22 @@ document.addEventListener("input", (event) => {
 
 document.addEventListener("pointerdown", (event) => {
   const button = event.target.closest("[data-test-channel]");
-  if (!button) return;
+
+  if (!button) {
+    return;
+  }
+
   event.preventDefault();
   startChannelTest(button.dataset.testChannel);
 });
 
 document.addEventListener("pointerup", stopChannelTest);
 document.addEventListener("pointercancel", stopChannelTest);
+
 document.addEventListener("pointerleave", (event) => {
-  if (event.target.closest?.("[data-test-channel]")) stopChannelTest();
+  if (event.target.closest?.("[data-test-channel]")) {
+    stopChannelTest();
+  }
 });
 
 function checkAccess() {
@@ -818,6 +1203,7 @@ function checkAccess() {
 
 function acceptDisclaimer() {
   const checked = document.getElementById("disclaimer-check")?.checked;
+
   if (!checked) {
     toast("同意チェックが必要です");
     return;
@@ -830,7 +1216,9 @@ function acceptDisclaimer() {
 }
 
 async function connectKnown() {
-  if (!guardAccess()) return;
+  if (!guardAccess()) {
+    return;
+  }
 
   if (!navigator.bluetooth || !navigator.bluetooth.getDevices) {
     toast("このブラウザはかんたん接続に対応していません");
@@ -853,7 +1241,9 @@ async function connectKnown() {
 }
 
 async function connectPreferred() {
-  if (!guardAccess()) return;
+  if (!guardAccess()) {
+    return;
+  }
 
   if (!navigator.bluetooth) {
     toast("Web Bluetooth非対応ブラウザです");
@@ -865,15 +1255,21 @@ async function connectPreferred() {
       filters: [{ namePrefix: DEVICE_NAME_PREFIX }],
       optionalServices: [BLE_SERVICE_UUID]
     });
+
     await attachBluetoothDevice(device);
   } catch (error) {
-    if (String(error.message || "").includes("User cancelled")) return;
+    if (String(error.message || "").includes("User cancelled")) {
+      return;
+    }
+
     safeStop(`推奨ID接続に失敗しました: ${error.message}`);
   }
 }
 
 async function connectManual() {
-  if (!guardAccess()) return;
+  if (!guardAccess()) {
+    return;
+  }
 
   if (!navigator.bluetooth) {
     toast("Web Bluetooth非対応ブラウザです");
@@ -885,9 +1281,13 @@ async function connectManual() {
       acceptAllDevices: true,
       optionalServices: [BLE_SERVICE_UUID]
     });
+
     await attachBluetoothDevice(device);
   } catch (error) {
-    if (String(error.message || "").includes("User cancelled")) return;
+    if (String(error.message || "").includes("User cancelled")) {
+      return;
+    }
+
     safeStop(`手動接続に失敗しました: ${error.message}`);
   }
 }
@@ -897,6 +1297,7 @@ async function attachBluetoothDevice(device) {
 
   state.device.bluetoothDevice = device;
   state.device.name = device.name || "低周波デバイス";
+
   device.addEventListener("gattserverdisconnected", () => {
     safeStop("低周波デバイスが切断されました");
   });
@@ -917,7 +1318,10 @@ async function attachBluetoothDevice(device) {
 }
 
 function connectSimulation() {
-  if (!guardAccess()) return;
+  if (!guardAccess()) {
+    return;
+  }
+
   state.device.mode = "simulation";
   state.device.connected = true;
   state.device.name = "低周波デバイスなし確認モード";
@@ -940,9 +1344,12 @@ async function disconnectDevice(goConnect) {
   state.device.bluetoothDevice = null;
   state.device.server = null;
   state.device.characteristic = null;
+
   logLocal("切断しました");
 
-  if (goConnect) setPhase(PHASE.CONNECT);
+  if (goConnect) {
+    setPhase(PHASE.CONNECT);
+  }
 }
 
 function guardAccess() {
@@ -950,6 +1357,7 @@ function guardAccess() {
     safeStop("Access Code未認証のため停止しました");
     return false;
   }
+
   return true;
 }
 
@@ -960,29 +1368,38 @@ function startChannelTest(ch) {
   }
 
   const cfg = state.settings.channels[ch];
+
   state.outputs.testHold = {
     channel: ch,
     percent: clamp(cfg.testPercent, 0, cfg.limit),
     startedAt: nowMs()
   };
+
   setMessage(`チャンネル${ch} テスト中`, "notice", false);
 }
 
 function stopChannelTest() {
   const hold = state.outputs.testHold;
-  if (!hold) return;
+
+  if (!hold) {
+    return;
+  }
 
   state.settings.channels[hold.channel].tested = true;
   saveSettings();
+
   state.outputs.testHold = null;
   state.outputs.A = 0;
   state.outputs.B = 0;
+
   sendZeroRepeated();
   render();
 }
 
 function startGame() {
-  if (!guardAccess()) return;
+  if (!guardAccess()) {
+    return;
+  }
 
   const A = state.settings.channels.A;
   const B = state.settings.channels.B;
@@ -1033,7 +1450,9 @@ function startGame() {
 }
 
 function rollCurrentDice() {
-  if (!canRoll()) return;
+  if (!canRoll()) {
+    return;
+  }
 
   clearAutoTimer();
 
@@ -1044,6 +1463,7 @@ function rollCurrentDice() {
   g.currentRoller = roller;
   g.status = rollingStatus;
   state.ui.diceAnimation = true;
+
   setMessage(`${g.players[roller].name} がダイスを振った！`, "normal");
 
   playSound("roll");
@@ -1051,15 +1471,18 @@ function rollCurrentDice() {
 
   setAutoTimer(() => {
     const roll = randomDice();
+
     g.players[roller].lastRoll = roll;
     state.ui.rollFaces[roller] = roll;
     state.ui.diceAnimation = false;
+
     playSound("decide");
 
     if (roller === "p1") {
       g.status = GAME_STATUS.WAIT_P2;
       g.currentRoller = "p2";
-      setMessage(`${g.players.p1.name} は ${roll}。\n${g.players.p2.name} のターンです。`, "normal");
+      g.message = `${g.players.p1.name} は ${roll}。\n${g.players.p2.name} のターンです。`;
+      setMessage(g.message, "normal");
     } else {
       g.status = GAME_STATUS.REVEAL;
       g.currentRoller = null;
@@ -1067,7 +1490,7 @@ function rollCurrentDice() {
     }
 
     render();
-  }, 820);
+  }, UI_TIMING.diceAnimationMs);
 
   render();
 }
@@ -1078,15 +1501,16 @@ function randomDice() {
 
 function startDiceAnimation(roller) {
   clearInterval(state.timers.dice);
+
   state.timers.dice = setInterval(() => {
     state.ui.rollFaces[roller] = randomDice();
     render();
-  }, 80);
+  }, UI_TIMING.diceAnimationIntervalMs);
 
   setTimeout(() => {
     clearInterval(state.timers.dice);
     state.timers.dice = null;
-  }, 800);
+  }, UI_TIMING.diceAnimationMs);
 }
 
 function revealRound() {
@@ -1117,7 +1541,9 @@ function revealRound() {
   g.lastLoser = loser;
   g.lastWinner = winner;
   g.status = GAME_STATUS.REVEAL;
-  setMessage(message, loser ? "stim" : "notice");
+  g.message = message;
+
+  setMessage(message, loser ? "stim" : "normal");
   render();
 
   setAutoTimer(() => {
@@ -1126,14 +1552,37 @@ function revealRound() {
     } else {
       endRound();
     }
-  }, 1800);
+  }, getMessageHoldMs(loser ? "stim" : "normal"));
+}
+
+function getMessageHoldMs(tone = "normal") {
+  if (tone === "critical") {
+    return UI_TIMING.criticalMessageHoldMs;
+  }
+
+  if (tone === "release") {
+    return UI_TIMING.releaseMessageHoldMs;
+  }
+
+  if (tone === "result") {
+    return UI_TIMING.resultMessageHoldMs;
+  }
+
+  if (tone === "stim") {
+    return UI_TIMING.stimMessageHoldMs;
+  }
+
+  return UI_TIMING.normalMessageHoldMs;
 }
 
 function beginSettlement(loser) {
   const g = state.game;
   const ms = intClamp(state.settings.rules.settlementCountdownMs, 0, 10000);
+
   g.status = GAME_STATUS.SETTLEMENT_COUNTDOWN;
-  setMessage(`${g.players[loser].name} 精算まで ${Math.ceil(ms / 1000)} 秒`, "warning");
+  g.message = `${g.players[loser].name} 精算まで ${Math.ceil(ms / 1000)} 秒`;
+
+  setMessage(g.message, "warning");
   render();
 
   setAutoTimer(() => {
@@ -1143,8 +1592,11 @@ function beginSettlement(loser) {
       state.settings.rules.settlementDurationMs,
       "精算"
     );
+
     g.status = GAME_STATUS.SETTLEMENT_PULSE;
-    setMessage(`${g.players[loser].name} 精算！`, "stim");
+    g.message = `${g.players[loser].name} 精算！`;
+
+    setMessage(g.message, "stim");
     playSound("settlement");
     render();
 
@@ -1166,10 +1618,13 @@ function endRound() {
       g.round += 1;
       g.status = GAME_STATUS.WAIT_P1;
       g.currentRoller = "p1";
-      setMessage(`同点！ サドンデスへ。\n${g.players.p1.name} から振ってください。`, "warning");
+      g.message = `同点！ サドンデスへ。\n${g.players.p1.name} から振ってください。`;
+
+      setMessage(g.message, "warning");
       render();
       return;
     }
+
     beginFinalSettlement();
     return;
   }
@@ -1182,7 +1637,9 @@ function endRound() {
   g.round += 1;
   g.status = GAME_STATUS.WAIT_P1;
   g.currentRoller = "p1";
-  setMessage(`ROUND ${g.round} 開始。\n${g.players.p1.name} のターンです。`, "normal");
+  g.message = `ROUND ${g.round} 開始。\n${g.players.p1.name} のターンです。`;
+
+  setMessage(g.message, "normal");
   render();
 }
 
@@ -1195,8 +1652,9 @@ function beginFinalSettlement() {
   g.lastLoser = loser;
   g.lastWinner = winner;
   g.status = GAME_STATUS.FINAL_COUNTDOWN;
+  g.message = `勝者 ${g.players[winner].name}。\n最終精算まで ${Math.ceil(ms / 1000)} 秒`;
 
-  setMessage(`勝者 ${g.players[winner].name}。\n最終精算まで ${Math.ceil(ms / 1000)} 秒`, "warning");
+  setMessage(g.message, "warning");
   render();
 
   setAutoTimer(() => {
@@ -1206,8 +1664,11 @@ function beginFinalSettlement() {
       state.settings.rules.finalSettlementDurationMs,
       "最終精算"
     );
+
     g.status = GAME_STATUS.FINAL_PULSE;
-    setMessage(`${g.players[loser].name} 最終精算！`, "critical");
+    g.message = `${g.players[loser].name} 最終精算！`;
+
+    setMessage(g.message, "critical");
     playSound("settlement");
     render();
 
@@ -1221,11 +1682,13 @@ function showResult() {
   const p2 = g.players.p2;
 
   stopAllOutputLocal();
+
   state.ui.screenRotated = false;
   applyRotation();
 
   let winner;
   let loser;
+
   if (p1.charge < p2.charge) {
     winner = p1;
     loser = p2;
@@ -1236,13 +1699,16 @@ function showResult() {
 
   g.status = GAME_STATUS.RESULT;
   g.resultReason = `${winner.name} の勝利！\n${winner.name}: Charge ${Math.round(winner.charge)} / ${loser.name}: Charge ${Math.round(loser.charge)}`;
+
   setPhase(PHASE.RESULT);
   setMessage(`${winner.name} の勝利です`, "result");
   playSound("victory");
 }
 
 function advanceMessage() {
-  if (!state.game || state.paused) return;
+  if (!state.game || state.paused) {
+    return;
+  }
 
   if (
     state.game.status === GAME_STATUS.REVEAL ||
@@ -1250,27 +1716,37 @@ function advanceMessage() {
     state.game.status === GAME_STATUS.ROUND_END
   ) {
     clearAutoTimer();
+
     if (state.game.status === GAME_STATUS.SETTLEMENT_COUNTDOWN && state.game.lastLoser) {
       beginSettlement(state.game.lastLoser);
     } else {
       endRound();
     }
   }
+
+  if (state.game.status === GAME_STATUS.FINAL_COUNTDOWN) {
+    clearAutoTimer();
+    beginFinalSettlement();
+  }
 }
 
 function togglePause() {
   state.paused = !state.paused;
+
   if (state.paused) {
     stopAllOutputLocal();
     setMessage("一時停止しました", "notice");
   } else {
     setMessage("再開しました", "normal");
   }
+
   render();
 }
 
 function giveUp() {
-  if (!state.game) return;
+  if (!state.game) {
+    return;
+  }
 
   const p1Charge = state.game.players.p1.charge;
   const p2Charge = state.game.players.p2.charge;
@@ -1279,13 +1755,17 @@ function giveUp() {
 
   state.game.players[loser].charge += 50;
   state.game.resultReason = `${state.game.players[loser].name} がギブアップ。\n${state.game.players[winner].name} の勝利です。`;
+
   stopAllOutputLocal();
   state.ui.screenRotated = false;
   setPhase(PHASE.RESULT);
 }
 
 function toggleRotate() {
-  if (state.phase !== PHASE.PLAYING) return;
+  if (state.phase !== PHASE.PLAYING) {
+    return;
+  }
+
   state.ui.screenRotated = !state.ui.screenRotated;
   applyRotation();
 }
@@ -1313,13 +1793,21 @@ function updateOutputs() {
     B = 0;
   } else if (state.outputs.testHold) {
     const h = state.outputs.testHold;
-    if (h.channel === "A") A = h.percent;
-    if (h.channel === "B") B = h.percent;
+
+    if (h.channel === "A") {
+      A = h.percent;
+    }
+
+    if (h.channel === "B") {
+      B = h.percent;
+    }
   } else if (state.phase === PHASE.PLAYING && state.game) {
     const r = state.settings.rules;
+
     if (r.continuousStim) {
       const cycle = intClamp(r.continuousOnMs, 100, 10000) + intClamp(r.continuousOffMs, 100, 10000);
       const on = nowMs() % cycle < intClamp(r.continuousOnMs, 100, 10000);
+
       if (on) {
         A += chargeToOutput(state.game.players.p1.charge);
         B += chargeToOutput(state.game.players.p2.charge);
@@ -1327,10 +1815,16 @@ function updateOutputs() {
     }
 
     const pulse = state.outputs.eventPulse;
+
     if (pulse) {
       if (nowMs() <= pulse.until) {
-        if (pulse.channel === "A") A += pulse.bonusPercent;
-        if (pulse.channel === "B") B += pulse.bonusPercent;
+        if (pulse.channel === "A") {
+          A += pulse.bonusPercent;
+        }
+
+        if (pulse.channel === "B") {
+          B += pulse.bonusPercent;
+        }
       } else {
         state.outputs.eventPulse = null;
       }
@@ -1349,7 +1843,10 @@ function updateOutputs() {
 
   if (state.phase === PHASE.PLAYING) {
     const t = nowMs();
-    if (t - state.ui.lastRenderAt > 130) render();
+
+    if (t - state.ui.lastRenderAt > 130) {
+      render();
+    }
   }
 }
 
@@ -1360,18 +1857,24 @@ function chargeToOutput(charge) {
 function applyChannelLimit(ch, value) {
   const cfg = state.settings.channels[ch];
   const limited = Math.min(clamp(value, 0, 100), clamp(cfg.limit, 0, 100));
+
   return clamp(limited, 0, 100);
 }
 
 async function sendOutputsThrottled(A, B) {
   const t = nowMs();
-  if (t - state.device.lastSendAt < 50) return;
+
+  if (t - state.device.lastSendAt < 50) {
+    return;
+  }
 
   const safeA = clamp(A, 0, 100);
   const safeB = clamp(B, 0, 100);
   const key = `${Math.round(safeA)}:${Math.round(safeB)}`;
 
-  if (key === state.device.lastPacketKey && safeA !== 0 && safeB !== 0) return;
+  if (key === state.device.lastPacketKey && safeA !== 0 && safeB !== 0) {
+    return;
+  }
 
   state.device.lastSendAt = t;
   state.device.lastPacketKey = key;
@@ -1383,10 +1886,21 @@ async function sendOutputPacket(A, B) {
   A = clamp(A, 0, 100);
   B = clamp(B, 0, 100);
 
-  if (state.device.mode === "simulation") return;
-  if (state.device.mode !== "ble") return;
-  if (!state.device.characteristic) return;
-  if (state.device.sending) return;
+  if (state.device.mode === "simulation") {
+    return;
+  }
+
+  if (state.device.mode !== "ble") {
+    return;
+  }
+
+  if (!state.device.characteristic) {
+    return;
+  }
+
+  if (state.device.sending) {
+    return;
+  }
 
   state.device.sending = true;
 
@@ -1410,10 +1924,21 @@ function buildPacket(A, B) {
 
   const bytes = [0xB0, 0x0F, pA, pB];
 
-  for (let i = 0; i < 4; i++) bytes.push(width);
-  for (let i = 0; i < 4; i++) bytes.push(freq);
-  for (let i = 0; i < 4; i++) bytes.push(width);
-  for (let i = 0; i < 4; i++) bytes.push(freq);
+  for (let i = 0; i < 4; i++) {
+    bytes.push(width);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    bytes.push(freq);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    bytes.push(width);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    bytes.push(freq);
+  }
 
   return new Uint8Array(bytes);
 }
@@ -1440,6 +1965,7 @@ function emergencyZeroOnly() {
   state.outputs.B = 0;
   state.outputs.testHold = null;
   state.outputs.eventPulse = null;
+
   sendOutputPacket(0, 0);
   sendOutputPacket(0, 0);
   sendOutputPacket(0, 0);
@@ -1447,6 +1973,7 @@ function emergencyZeroOnly() {
 
 async function safeStop(reason) {
   state.safeReason = reason || "安全停止しました";
+
   stopAllOutputLocal();
   clearAllTimers();
   logLocal(`SAFE STOP: ${state.safeReason}`);
@@ -1463,6 +1990,7 @@ async function safeStop(reason) {
   state.ui.screenRotated = false;
   applyRotation();
   render();
+  scrollTopSoon();
 }
 
 function stopAllOutputLocal() {
@@ -1487,8 +2015,12 @@ function clearAutoTimer() {
 
 function setAutoTimer(fn, ms) {
   clearAutoTimer();
+
   state.timers.auto = setTimeout(() => {
-    if (state.paused || state.phase === PHASE.SAFE_LOCKED) return;
+    if (state.paused || state.phase === PHASE.SAFE_LOCKED) {
+      return;
+    }
+
     fn();
   }, Math.max(0, ms));
 }
@@ -1497,6 +2029,7 @@ function unlockSafe() {
   if (!state.accessGranted) {
     state.phase = PHASE.ACCESS;
     render();
+    scrollTopSoon();
     return;
   }
 
@@ -1512,9 +2045,11 @@ function unlockSafe() {
 
 function resetAccess() {
   localStorage.removeItem(STORAGE_KEYS.access);
+  localStorage.removeItem(STORAGE_KEYS.disclaimer);
+
   state.accessGranted = false;
   state.disclaimerAccepted = false;
-  localStorage.removeItem(STORAGE_KEYS.disclaimer);
+
   stopAllOutputLocal();
   setPhase(PHASE.ACCESS);
 }
@@ -1524,11 +2059,17 @@ function sleep(ms) {
 }
 
 async function unlockAudio() {
-  if (state.audio.unlocked) return;
+  if (state.audio.unlocked) {
+    return;
+  }
 
   try {
     const ctx = getAudioContext();
-    if (ctx.state === "suspended") await ctx.resume();
+
+    if (ctx.state === "suspended") {
+      await ctx.resume();
+    }
+
     state.audio.unlocked = true;
   } catch {}
 }
@@ -1541,11 +2082,14 @@ function getAudioContext() {
     state.audio.master.gain.value = 0.16;
     state.audio.master.connect(state.audio.ctx.destination);
   }
+
   return state.audio.ctx;
 }
 
 function playSound(type) {
-  if (!state.settings.audio.soundEnabled) return;
+  if (!state.settings.audio.soundEnabled) {
+    return;
+  }
 
   try {
     const ctx = getAudioContext();
@@ -1562,33 +2106,53 @@ function playSound(type) {
 
     osc.type = type === "warning" ? "square" : "sawtooth";
     osc.frequency.value = freqMap[type] || 300;
+
     gain.gain.setValueAtTime(0.001, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.16, ctx.currentTime + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
 
     osc.connect(gain);
     gain.connect(state.audio.master);
+
     osc.start();
     osc.stop(ctx.currentTime + 0.2);
   } catch {}
 }
 
 function speak(text) {
-  if (!state.settings.audio.speechEnabled) return;
-  if (!window.speechSynthesis) return;
+  if (!state.settings.audio.speechEnabled) {
+    return;
+  }
+
+  if (!window.speechSynthesis) {
+    return;
+  }
 
   const normalized = String(text || "").replace(/\n/g, "。");
-  if (!normalized || normalized === state.audio.lastSpeech) return;
+
+  if (!normalized || normalized === state.audio.lastSpeech) {
+    return;
+  }
 
   state.audio.lastSpeech = normalized;
 
   try {
     window.speechSynthesis.cancel();
+
     const utter = new SpeechSynthesisUtterance(normalized);
     utter.lang = "ja-JP";
     utter.rate = clamp(state.settings.audio.speechRate, 0.5, 1.8);
     utter.pitch = clamp(state.settings.audio.speechPitch, 0.5, 1.8);
     utter.volume = clamp(state.settings.audio.speechVolume, 0, 1);
+
     window.speechSynthesis.speak(utter);
   } catch {}
+}
+
+function canRoll() {
+  if (state.paused || !state.game) {
+    return false;
+  }
+
+  return state.game.status === GAME_STATUS.WAIT_P1 || state.game.status === GAME_STATUS.WAIT_P2;
 }
