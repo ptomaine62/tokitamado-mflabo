@@ -1,9 +1,9 @@
 "use strict";
 
-const VERSION = "20260605-05";
+const VERSION = "20260605-hp-01";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
-const PRODUCT_NAME = "DICE CHARGE BATTLE";
-const ACCESS_CODE = "DCB-MFLABO-202606";
+const PRODUCT_NAME = "HP CRASH BATTLE";
+const ACCESS_CODE = "HCB-MFLABO-202606";
 const DEVICE_NAME_PREFIX = "ID:47L";
 
 const BLE_SERVICE_UUID = "0000180c-0000-1000-8000-00805f9b34fb";
@@ -21,22 +21,17 @@ const PHASE = {
 };
 
 const STATUS = {
-  WAIT_P1: "WAIT_P1",
-  ROLLING_P1: "ROLLING_P1",
-  WAIT_P2: "WAIT_P2",
-  ROLLING_P2: "ROLLING_P2",
+  WAIT_ACTION: "WAIT_ACTION",
+  ROLLING_ATTACK: "ROLLING_ATTACK",
+  ROLLING_RELEASE: "ROLLING_RELEASE",
   REVEAL: "REVEAL",
-  SETTLEMENT_COUNTDOWN: "SETTLEMENT_COUNTDOWN",
-  SETTLEMENT_PULSE: "SETTLEMENT_PULSE",
-  FINAL_COUNTDOWN: "FINAL_COUNTDOWN",
-  FINAL_PULSE: "FINAL_PULSE",
   RESULT: "RESULT"
 };
 
 const STORE = {
-  access: "dcb_access_granted_v3",
-  disclaimer: "dcb_disclaimer_accepted_v3",
-  settings: "dcb_settings_v3"
+  access: "hcb_access_granted_v1",
+  disclaimer: "hcb_disclaimer_accepted_v1",
+  settings: "hcb_settings_v1"
 };
 
 const TIMING = {
@@ -68,21 +63,60 @@ const DEFAULT_SETTINGS = {
     A: { limit: 30, testPercent: 5, pulseWidth: 10, frequency: 100, tested: false },
     B: { limit: 30, testPercent: 5, pulseWidth: 10, frequency: 100, tested: false }
   },
-  rules: {
-    rounds: 10,
-    diceSides: 6,
-    chargeMultiplier: 5,
-    drawCharge: 3,
-    continuousStim: true,
-    continuousOnMs: 500,
-    continuousOffMs: 1500,
-    settlementStim: true,
-    settlementCountdownMs: 3000,
-    settlementBonusPercent: 5,
-    settlementDurationMs: 900,
-    finalSettlementCountdownMs: 3000,
-    finalSettlementBonusPercent: 8,
-    finalSettlementDurationMs: 2000
+  hpCrash: {
+    initialHp: 100,
+    turnLimit: 0,
+
+    normalPulseDurationMs: 900,
+    strongPulseDurationMs: 1000,
+    criticalPulseDurationMs: 1200,
+    fumblePulseDurationMs: 900,
+
+    strongSettlementBonusPercent: 5,
+    criticalSettlementBonusPercent: 8,
+
+    minGrazeStimPercent: 3,
+    minHitStimPercent: 4,
+    minStrongStimPercent: 6,
+    minCriticalStimPercent: 8,
+    minFumbleStimPercent: 5,
+
+    releaseThreshold: 30,
+    releaseBurstSelfDamage: 15,
+    releaseFailureTargetDamage: 10,
+    releaseFailureSelfDamage: 8,
+    releaseSuccessBaseDamage: 10,
+    releaseGreatBaseDamage: 20,
+    releaseDamageDebtDivisor: 2,
+
+    releaseSuccessTargetDebt: 20,
+    releaseGreatTargetDebt: 30,
+
+    releaseSelfBonusPercent: 5,
+    releaseFailureSelfBonusPercent: 6,
+    releaseBurstSelfBonusPercent: 8,
+    releaseSuccessTargetBonusPercent: 8,
+    releaseGreatTargetBonusPercent: 12,
+
+    minReleaseSelfStimPercent: 8,
+    minReleaseFailureStimPercent: 8,
+    minReleaseBurstStimPercent: 10,
+    minReleaseSuccessStimPercent: 10,
+    minReleaseGreatStimPercent: 12,
+
+    releaseSelfPulseDurationMs: 1200,
+    releaseFailurePulseDurationMs: 1200,
+    releaseBurstPulseDurationMs: 1500,
+    releaseSuccessPulseDurationMs: 1500,
+    releaseGreatPulseDurationMs: 2000,
+
+    table: {
+      fumble: { roll: 2, selfDebt: 15 },
+      graze: { min: 3, max: 5, damage: 5, debt: 5 },
+      hit: { min: 6, max: 8, damage: 10, debt: 10 },
+      strong: { min: 9, max: 11, damage: 15, debt: 15 },
+      critical: { roll: 12, damage: 25, debt: 25 }
+    }
   },
   audio: {
     soundEnabled: true,
@@ -130,8 +164,7 @@ const state = {
     message: "",
     tone: "normal",
     diceRolling: false,
-    rollFaces: { p1: 1, p2: 1 },
-    countdownEnd: 0,
+    rollFaces: { p1: [1, 1], p2: [1, 1] },
     skipHandler: null,
     voices: []
   },
@@ -171,7 +204,7 @@ function boot() {
   startLiveDomLoop();
   render();
   scrollTopSoon();
-  log("起動しました");
+  log("HP CRASH BATTLE 起動");
 }
 
 function bindDocumentEvents() {
@@ -226,7 +259,7 @@ async function onClick(event) {
 
   const action = el.dataset.action;
 
-  if (action === "roll") {
+  if (action === "attack" || action === "release") {
     event.stopPropagation();
   }
 
@@ -243,7 +276,8 @@ async function onClick(event) {
   else if (action === "back-channel-test") setPhase(PHASE.CHANNEL_TEST);
   else if (action === "back-connect") setPhase(PHASE.CONNECT);
   else if (action === "start-game") startGame();
-  else if (action === "roll") rollCurrentDice();
+  else if (action === "attack") rollAttack();
+  else if (action === "release") rollRelease();
   else if (action === "advance") advanceMessage();
   else if (action === "pause") togglePause();
   else if (action === "give-up-p1") giveUp("p1");
@@ -267,26 +301,19 @@ function onInput(event) {
     return;
   }
 
-  if (el.dataset.rule) {
+  if (el.dataset.hp) {
     const min = Number(el.min);
     const max = Number(el.max);
-    state.settings.rules[el.dataset.rule] = intClamp(el.value, min, max);
+    state.settings.hpCrash[el.dataset.hp] = intClamp(el.value, min, max);
     saveSettings();
     return;
   }
 
-  if (el.dataset.ruleSec) {
+  if (el.dataset.hpSec) {
     const min = Number(el.min);
     const max = Number(el.max);
     const seconds = clamp(el.value, min, max);
-    state.settings.rules[el.dataset.ruleSec] = Math.round(seconds * 1000);
-    saveSettings();
-    return;
-  }
-
-  if (el.dataset.check) {
-    const section = el.dataset.section || "rules";
-    state.settings[section][el.dataset.check] = el.checked;
+    state.settings.hpCrash[el.dataset.hpSec] = Math.round(seconds * 1000);
     saveSettings();
     return;
   }
@@ -304,6 +331,13 @@ function onInput(event) {
 
   if (el.dataset.audioSelect) {
     state.settings.audio[el.dataset.audioSelect] = el.value;
+    saveSettings();
+    return;
+  }
+
+  if (el.dataset.check) {
+    const section = el.dataset.section || "hpCrash";
+    state.settings[section][el.dataset.check] = el.checked;
     saveSettings();
     return;
   }
@@ -445,7 +479,7 @@ function renderAccess() {
       <div class="hero-card">
         ${renderVersionStrip()}
         <div class="brand-kicker">${escape(PRODUCT_FAMILY)}</div>
-        <h1 class="brand-title">DICE<br>CHARGE<br>BATTLE</h1>
+        <h1 class="brand-title">HP<br>CRASH<br>BATTLE</h1>
         <div class="brand-ja">アクセスコード</div>
         <p class="notice">
           BOOTH購入者向けAccess Codeを入力してください。<br>
@@ -453,7 +487,7 @@ function renderAccess() {
         </p>
         <div class="form-stack">
           <label class="field-label">Access Code</label>
-          <input id="access-code" class="input big-input" autocomplete="off" inputmode="latin" placeholder="DCB-..." />
+          <input id="access-code" class="input big-input" autocomplete="off" inputmode="latin" placeholder="HCB-..." />
           <button class="btn primary wide stable-btn" data-action="check-access">認証して開始</button>
         </div>
       </div>
@@ -564,7 +598,7 @@ function rangeInput(id, label, value, min, max, step, unit) {
 }
 
 function renderRuleSetup() {
-  const r = state.settings.rules;
+  const h = state.settings.hpCrash;
   const p = state.settings.players;
   const audio = state.settings.audio;
 
@@ -581,21 +615,29 @@ function renderRuleSetup() {
       </div>
 
       <div class="card">
-        <h2>ルール</h2>
+        <h2>HPクラッシュ設定</h2>
         <div class="setup-grid">
-          ${numberField("rounds", "ラウンド数", r.rounds, 3, 30, 1)}
-          ${numberField("chargeMultiplier", "出目差チャージ", r.chargeMultiplier, 1, 20, 1)}
-          ${numberField("drawCharge", "あいこチャージ", r.drawCharge, 0, 20, 1)}
-          ${checkField("continuousStim", "継続出力", r.continuousStim)}
-          ${secondField("continuousOnMs", "継続ON時間（秒）", r.continuousOnMs, 0.1, 5, 0.1)}
-          ${secondField("continuousOffMs", "継続OFF時間（秒）", r.continuousOffMs, 0.1, 10, 0.1)}
-          ${checkField("settlementStim", "精算イベント", r.settlementStim)}
-          ${secondField("settlementCountdownMs", "精算カウント（秒）", r.settlementCountdownMs, 0, 10, 0.5)}
-          ${numberField("settlementBonusPercent", "精算ボーナス%", r.settlementBonusPercent, 0, 50, 1)}
-          ${secondField("settlementDurationMs", "精算時間（秒）", r.settlementDurationMs, 0.1, 10, 0.1)}
-          ${secondField("finalSettlementCountdownMs", "最終精算カウント（秒）", r.finalSettlementCountdownMs, 0, 10, 0.5)}
-          ${numberField("finalSettlementBonusPercent", "最終精算ボーナス%", r.finalSettlementBonusPercent, 0, 50, 1)}
-          ${secondField("finalSettlementDurationMs", "最終精算時間（秒）", r.finalSettlementDurationMs, 0.1, 15, 0.1)}
+          ${hpNumberField("initialHp", "初期HP", h.initialHp, 10, 300, 1)}
+          ${hpNumberField("turnLimit", "ターン上限（0で無制限）", h.turnLimit, 0, 99, 1)}
+          ${hpNumberField("releaseThreshold", "蓄積解放しきい値", h.releaseThreshold, 0, 100, 1)}
+          ${hpNumberField("releaseDamageDebtDivisor", "解放ダメージ除数", h.releaseDamageDebtDivisor, 1, 10, 1)}
+
+          ${hpSecondField("normalPulseDurationMs", "通常パルス秒", h.normalPulseDurationMs, 0.1, 10, 0.1)}
+          ${hpSecondField("strongPulseDurationMs", "強打パルス秒", h.strongPulseDurationMs, 0.1, 10, 0.1)}
+          ${hpSecondField("criticalPulseDurationMs", "クリティカル秒", h.criticalPulseDurationMs, 0.1, 10, 0.1)}
+          ${hpSecondField("fumblePulseDurationMs", "ファンブル秒", h.fumblePulseDurationMs, 0.1, 10, 0.1)}
+
+          ${hpNumberField("minGrazeStimPercent", "かすり最低%", h.minGrazeStimPercent, 0, 100, 1)}
+          ${hpNumberField("minHitStimPercent", "命中最低%", h.minHitStimPercent, 0, 100, 1)}
+          ${hpNumberField("minStrongStimPercent", "強打最低%", h.minStrongStimPercent, 0, 100, 1)}
+          ${hpNumberField("minCriticalStimPercent", "クリティカル最低%", h.minCriticalStimPercent, 0, 100, 1)}
+          ${hpNumberField("minFumbleStimPercent", "ファンブル最低%", h.minFumbleStimPercent, 0, 100, 1)}
+
+          ${hpNumberField("releaseBurstSelfDamage", "暴発 自傷", h.releaseBurstSelfDamage, 0, 100, 1)}
+          ${hpNumberField("releaseFailureTargetDamage", "失敗 対象ダメージ", h.releaseFailureTargetDamage, 0, 100, 1)}
+          ${hpNumberField("releaseFailureSelfDamage", "失敗 自傷", h.releaseFailureSelfDamage, 0, 100, 1)}
+          ${hpNumberField("releaseSuccessBaseDamage", "成功 基本ダメージ", h.releaseSuccessBaseDamage, 0, 100, 1)}
+          ${hpNumberField("releaseGreatBaseDamage", "大成功 基本ダメージ", h.releaseGreatBaseDamage, 0, 100, 1)}
         </div>
       </div>
 
@@ -622,27 +664,27 @@ function renderRuleSetup() {
   `;
 }
 
-function numberField(key, label, value, min, max, step) {
+function hpNumberField(key, label, value, min, max, step) {
   return `
     <label class="field-label">
       ${escape(label)}
-      <input class="input" type="number" id="rule-${escape(key)}" value="${escape(value)}" min="${min}" max="${max}" step="${step}" data-rule="${escape(key)}">
+      <input class="input" type="number" id="hp-${escape(key)}" value="${escape(value)}" min="${min}" max="${max}" step="${step}" data-hp="${escape(key)}">
     </label>
   `;
 }
 
-function secondField(key, label, valueMs, min, max, step) {
+function hpSecondField(key, label, valueMs, min, max, step) {
   const valueSec = Number((Number(valueMs || 0) / 1000).toFixed(2));
 
   return `
     <label class="field-label">
       ${escape(label)}
-      <input class="input" type="number" id="rule-sec-${escape(key)}" value="${escape(valueSec)}" min="${min}" max="${max}" step="${step}" data-rule-sec="${escape(key)}">
+      <input class="input" type="number" id="hp-sec-${escape(key)}" value="${escape(valueSec)}" min="${min}" max="${max}" step="${step}" data-hp-sec="${escape(key)}">
     </label>
   `;
 }
 
-function checkField(key, label, checked, section = "rules") {
+function checkField(key, label, checked, section = "hpCrash") {
   return `
     <label class="check-row">
       <input type="checkbox" data-check="${escape(key)}" data-section="${escape(section)}" ${checked ? "checked" : ""}>
@@ -690,7 +732,7 @@ function renderPlaying() {
 
   view.innerHTML = `
     <section class="screen playing-screen">
-      ${header("DICE CHARGE BATTLE", g.message, { rotate: true, menu: true })}
+      ${header("HP CRASH BATTLE", g.message, { rotate: true, menu: true })}
 
       <div class="battle-main">
         <div class="desktop-hud play-layout">
@@ -704,12 +746,12 @@ function renderPlaying() {
         </div>
 
         <section class="card game-center ${canAdvance() ? "message-hold-clickable" : ""}" data-action="advance">
-          <div class="round-label">${renderRoundLabel()}</div>
+          <div class="round-label">${renderTurnLabel()}</div>
           ${renderMessageBox(state.ui.message || g.message, state.ui.tone)}
           ${state.paused ? `<div class="pause-banner">PAUSED：再開するまで進行しません</div>` : ""}
           <div class="phase-hint" id="phase-hint">${escape(phaseHintText())}</div>
-          <div class="countdown-line" id="countdown-line">${countdownText()}</div>
-          <div class="message-advance-hint" id="advance-hint">${canAdvance() ? "タップでスキップ" : "自動進行します"}</div>
+          <div class="countdown-line" id="countdown-line"></div>
+          <div class="message-advance-hint" id="advance-hint">${canAdvance() ? "タップで次へ" : "操作待ち"}</div>
 
           <div class="dice-area">
             ${renderDiceBox("p1")}
@@ -717,8 +759,11 @@ function renderPlaying() {
           </div>
 
           <div class="battle-actions">
-            <button class="btn primary big stable-btn" id="btn-roll" data-action="roll" ${canRoll() ? "" : "disabled"}>
-              🎲 ふる
+            <button class="btn primary big stable-btn" data-action="attack" ${canAct() ? "" : "disabled"}>
+              ⚔ 攻撃
+            </button>
+            <button class="btn orange big stable-btn" data-action="release" ${canRelease() ? "" : "disabled"}>
+              🔥 解放
             </button>
           </div>
         </section>
@@ -733,46 +778,45 @@ function renderPlaying() {
   updateLiveDom();
 }
 
-function renderRoundLabel() {
+function renderTurnLabel() {
   const g = state.game;
 
-  if (g.suddenDeath) {
-    return `<span class="round-main sudden">SUDDEN DEATH</span>`;
+  if (!g) {
+    return "";
   }
 
+  const limit = g.turnLimit > 0 ? ` / ${g.turnLimit}` : "";
   return `
-    <span class="round-main">ROUND ${escape(g.round)} / ${escape(g.maxRounds)}</span>
-    <span class="round-sub">CHARGE BATTLE</span>
+    <span class="round-main">TURN ${escape(g.turn)}${escape(limit)}</span>
+    <span class="round-sub">ATTACKER: ${escape(playerName(g.attackerId))}</span>
   `;
 }
 
 function renderBattlePlayerCard(id) {
   const p = state.game.players[id];
-  const ch = p.channel;
-  const maxCharge = maxChargeValue();
-  const active = state.game.currentRoller === id;
-  const loser = state.game.lastLoser === id;
-  const winner = state.game.lastWinner === id;
+  const active = state.game.attackerId === id;
+  const target = state.game.defenderId === id;
+  const maxDebt = 100;
 
   return `
-    <section class="battle-player-card card player-tone-${p.colorIndex} ${active ? "is-active" : ""} ${loser ? "is-loser" : ""} ${winner ? "is-winner" : ""}">
+    <section class="battle-player-card card player-tone-${p.colorIndex} ${active ? "is-active" : ""} ${target ? "is-loser" : ""}">
       <div class="battle-player-top">
         <div>
-          <div class="player-id">${escape(id.toUpperCase())} / CH ${escape(ch)}</div>
+          <div class="player-id">${escape(id.toUpperCase())} / CH ${escape(p.channel)}</div>
           <h2 class="battle-player-name">${escape(p.name)}</h2>
         </div>
-        <div class="battle-charge-number" data-charge-number="${id}">${Math.round(p.charge)}</div>
+        <div class="battle-charge-number" data-charge-number="${id}">${Math.round(p.hp)}</div>
       </div>
 
       <div class="battle-gauge-stack">
-        ${gauge("HP", p.hp, 100, "hp", id)}
-        ${gauge("Charge", p.charge, maxCharge, "charge", id)}
+        ${gauge("HP", p.hp, state.settings.hpCrash.initialHp, "hp", id)}
+        ${gauge("蓄積", p.debt, maxDebt, "charge", id)}
         ${gauge("OUTPUT", outputOf(id), 100, "output", id)}
       </div>
 
       <div class="battle-player-meta">
-        <span>LIMIT ${escape(state.settings.channels[ch].limit)}%</span>
-        <span>DICE <b data-dice-value="${id}">${p.lastRoll || "-"}</b></span>
+        <span>LIMIT ${escape(state.settings.channels[p.channel].limit)}%</span>
+        <span>${p.releaseUsed ? "解放済み" : p.debt >= state.settings.hpCrash.releaseThreshold ? "解放可能" : "解放待ち"}</span>
       </div>
     </section>
   `;
@@ -780,7 +824,6 @@ function renderBattlePlayerCard(id) {
 
 function renderMiniHud(id) {
   const p = state.game.players[id];
-  const maxCharge = maxChargeValue();
 
   return `
     <section class="mini-hud-card player-tone-${p.colorIndex}">
@@ -789,8 +832,8 @@ function renderMiniHud(id) {
         <span>CH ${escape(p.channel)}</span>
       </div>
       <div class="mini-hud-gauges">
-        ${miniGauge("HP", p.hp, 100, "hp", id)}
-        ${miniGauge("Charge", p.charge, maxCharge, "charge", id)}
+        ${miniGauge("HP", p.hp, state.settings.hpCrash.initialHp, "hp", id)}
+        ${miniGauge("蓄積", p.debt, 100, "charge", id)}
         ${miniGauge("OUTPUT", outputOf(id), 100, "output", id)}
       </div>
     </section>
@@ -845,14 +888,17 @@ function renderMessageBox(message, tone) {
 
 function renderDiceBox(id) {
   const p = state.game.players[id];
-  const face = state.ui.diceRolling && state.game.currentRoller === id ? state.ui.rollFaces[id] : p.lastRoll || 1;
-  const active = state.game.currentRoller === id;
+  const active = state.game.attackerId === id;
+  const faces = state.ui.diceRolling && active ? state.ui.rollFaces[id] : p.lastDice || [1, 1];
+  const total = p.lastRoll || "-";
 
   return `
     <div class="dice-box player-tone-${p.colorIndex} ${active ? "active" : ""}">
       <div class="dice-owner">${escape(p.name)}</div>
-      <div class="dice-face ${state.ui.diceRolling && active ? "rolling" : ""}" data-dice-face="${id}">${DICE[face]}</div>
-      <div class="dice-value" data-dice-result="${id}">${p.lastRoll || "-"}</div>
+      <div class="dice-face ${state.ui.diceRolling && active ? "rolling" : ""}" data-dice-face="${id}">
+        ${DICE[faces[0]]}${DICE[faces[1]]}
+      </div>
+      <div class="dice-value" data-dice-result="${id}">${escape(total)}</div>
     </div>
   `;
 }
@@ -880,8 +926,8 @@ function renderFooterSafe(showGameControls) {
 
 function renderResult() {
   const g = state.game;
-  const p1 = g?.players?.p1 || { name: "P1", charge: 0 };
-  const p2 = g?.players?.p2 || { name: "P2", charge: 0 };
+  const p1 = g?.players?.p1 || { name: "P1", hp: 0, debt: 0 };
+  const p2 = g?.players?.p2 || { name: "P2", hp: 0, debt: 0 };
 
   view.innerHTML = `
     <section class="screen">
@@ -892,13 +938,13 @@ function renderResult() {
         <div class="grid two">
           <div class="score-card player-tone-1">
             <h2>${escape(p1.name)}</h2>
-            <div class="score-number">${Math.round(p1.charge)}</div>
-            <p>Charge</p>
+            <div class="score-number">${Math.round(p1.hp)}</div>
+            <p>HP / 蓄積 ${Math.round(p1.debt)}</p>
           </div>
           <div class="score-card player-tone-2">
             <h2>${escape(p2.name)}</h2>
-            <div class="score-number">${Math.round(p2.charge)}</div>
-            <p>Charge</p>
+            <div class="score-number">${Math.round(p2.hp)}</div>
+            <p>HP / 蓄積 ${Math.round(p2.debt)}</p>
           </div>
         </div>
         <div class="button-row">
@@ -1110,335 +1156,461 @@ async function disconnectDevice(goConnect) {
   state.device.name = "";
   state.device.bluetoothDevice = null;
   state.device.characteristic = null;
-  log("切断しました");
+  state.device.sending = false;
+  state.device.lastPacket = "";
 
   if (goConnect) {
     setPhase(PHASE.CONNECT);
   }
 }
 
-function startChannelTest(ch) {
-  if (!state.device.connected) {
-    toast("先に接続または確認モードを選んでください");
-    return;
-  }
-
-  const cfg = state.settings.channels[ch];
-  state.output.testHold = {
-    channel: ch,
-    percent: clamp(cfg.testPercent, 0, cfg.limit)
-  };
-
-  setMessage(`チャンネル${ch} テスト中`, "normal", false);
-}
-
-function stopChannelTest() {
-  const hold = state.output.testHold;
-
-  if (!hold) {
-    return;
-  }
-
-  state.settings.channels[hold.channel].tested = true;
-  state.output.testHold = null;
-  state.output.A = 0;
-  state.output.B = 0;
-  saveSettings();
-  sendZeroRepeated();
-  render();
-}
-
-function startGame() {
-  if (!guardAccess()) {
-    return;
+function guardAccess() {
+  if (!state.accessGranted) {
+    setPhase(PHASE.ACCESS);
+    return false;
   }
 
   if (!state.disclaimerAccepted) {
     setPhase(PHASE.DISCLAIMER);
-    return;
+    return false;
   }
 
+  return true;
+}
+
+function startGame() {
   if (!state.device.connected) {
-    toast("先に接続または確認モードを選んでください");
-    setPhase(PHASE.CONNECT);
+    toast("先に接続または確認モードを開始してください");
     return;
   }
 
   if (!state.settings.channels.A.tested || !state.settings.channels.B.tested) {
-    toast("A/B両方のテスト完了が必要です");
+    toast("A/Bチャンネルテストが必要です");
     setPhase(PHASE.CHANNEL_TEST);
     return;
   }
 
-  const p1Name = state.settings.players.p1.name || "P1";
-  const p2Name = state.settings.players.p2.name || "P2";
+  stopAllOutputLocal();
+  clearTimers();
 
-  state.paused = false;
-  state.output.testHold = null;
-  state.output.eventPulse = null;
-  state.ui.rotated = false;
-  state.ui.countdownEnd = 0;
-  state.ui.skipHandler = null;
+  const h = state.settings.hpCrash;
+  const initialHp = intClamp(h.initialHp, 10, 300);
 
   state.game = {
-    status: STATUS.WAIT_P1,
-    round: 1,
-    maxRounds: intClamp(state.settings.rules.rounds, 3, 30),
-    suddenDeath: false,
-    currentRoller: "p1",
-    lastLoser: null,
-    lastWinner: null,
-    pendingContinuousPlayers: [],
-    message: `${p1Name} のターンです。\nダイスを振ってください。`,
+    status: STATUS.WAIT_ACTION,
+    turn: 1,
+    turnLimit: intClamp(h.turnLimit, 0, 99),
+    attackerId: "p1",
+    defenderId: "p2",
+    lastAction: "",
+    lastCategory: "",
+    lastRoll: 0,
     resultReason: "",
+    message: `${state.settings.players.p1.name} のターン\n攻撃または蓄積解放を選択`,
     players: {
-      p1: { name: p1Name, channel: "A", colorIndex: 1, hp: 100, charge: 0, lastRoll: null, continuousActive: false },
-      p2: { name: p2Name, channel: "B", colorIndex: 2, hp: 100, charge: 0, lastRoll: null, continuousActive: false }
+      p1: {
+        id: "p1",
+        name: state.settings.players.p1.name || "P1",
+        channel: state.settings.players.p1.channel || "A",
+        colorIndex: 1,
+        hp: initialHp,
+        debt: 0,
+        releaseUsed: false,
+        lastRoll: 0,
+        lastDice: [1, 1],
+        gaveUp: false
+      },
+      p2: {
+        id: "p2",
+        name: state.settings.players.p2.name || "P2",
+        channel: state.settings.players.p2.channel || "B",
+        colorIndex: 2,
+        hp: initialHp,
+        debt: 0,
+        releaseUsed: false,
+        lastRoll: 0,
+        lastDice: [1, 1],
+        gaveUp: false
+      }
     }
   };
 
-  setMessage(state.game.message, "normal");
+  state.ui.message = state.game.message;
+  state.ui.tone = "normal";
+  state.ui.skipHandler = null;
+  state.paused = false;
+  log("HP CRASH BATTLE 開始");
   setPhase(PHASE.PLAYING);
+  speakMessage(state.ui.message);
 }
 
-function rollCurrentDice() {
-  if (!canRoll()) {
+function canAct() {
+  return (
+    state.phase === PHASE.PLAYING &&
+    state.game &&
+    state.game.status === STATUS.WAIT_ACTION &&
+    !state.paused
+  );
+}
+
+function canRelease() {
+  if (!canAct()) {
+    return false;
+  }
+
+  const attacker = currentAttacker();
+  const threshold = Number(state.settings.hpCrash.releaseThreshold || 30);
+
+  return attacker && !attacker.releaseUsed && attacker.debt >= threshold;
+}
+
+function canAdvance() {
+  return state.game && state.game.status === STATUS.REVEAL && typeof state.ui.skipHandler === "function";
+}
+
+function rollAttack() {
+  if (!canAct()) {
     return;
   }
 
-  clearAutoTimer();
+  startRolling("attack");
+}
 
+function rollRelease() {
+  if (!canRelease()) {
+    toast("蓄積が足りない、または解放済みです");
+    return;
+  }
+
+  startRolling("release");
+}
+
+function startRolling(action) {
   const g = state.game;
-  const roller = g.status === STATUS.WAIT_P1 ? "p1" : "p2";
+  const attacker = currentAttacker();
 
-  g.status = roller === "p1" ? STATUS.ROLLING_P1 : STATUS.ROLLING_P2;
-  g.currentRoller = roller;
+  if (!g || !attacker) {
+    return;
+  }
+
+  clearTimers();
+  stopAllOutputLocal();
+
+  g.status = action === "release" ? STATUS.ROLLING_RELEASE : STATUS.ROLLING_ATTACK;
+  g.lastAction = action;
   state.ui.diceRolling = true;
-  state.ui.skipHandler = null;
-  state.ui.countdownEnd = 0;
+  state.ui.tone = action === "release" ? "critical" : "normal";
+  state.ui.message = action === "release"
+    ? `${attacker.name} の蓄積解放\n2D6を振っています`
+    : `${attacker.name} の攻撃\n2D6を振っています`;
 
-  setMessage(`${g.players[roller].name} がダイスを振った！`, "normal");
-  playSound("roll");
-  startDiceAnimation(roller);
+  playSound(action === "release" ? "critical" : "roll");
   render();
 
-  setAutoTimer(() => {
-    const roll = randomDice();
+  state.timers.dice = setInterval(() => {
+    state.ui.rollFaces[attacker.id] = [randDice(), randDice()];
+    updateDiceDisplays();
+  }, TIMING.diceTickMs);
 
-    g.players[roller].lastRoll = roll;
-    state.ui.rollFaces[roller] = roll;
+  state.timers.auto = setTimeout(() => {
+    clearInterval(state.timers.dice);
+    state.timers.dice = null;
+
+    const dice = [randDice(), randDice()];
+    const total = dice[0] + dice[1];
+
+    attacker.lastDice = dice;
+    attacker.lastRoll = total;
+    state.ui.rollFaces[attacker.id] = dice;
     state.ui.diceRolling = false;
-    playSound("decide");
 
-    if (roller === "p1") {
-      g.status = STATUS.WAIT_P2;
-      g.currentRoller = "p2";
-      g.message = `${g.players.p1.name} は ${roll}。\n${g.players.p2.name} のターンです。`;
-      setMessage(g.message, "normal");
-      render();
+    if (action === "release") {
+      resolveRelease(total, dice);
     } else {
-      g.status = STATUS.REVEAL;
-      g.currentRoller = null;
-      revealRound();
+      resolveAttack(total, dice);
     }
   }, TIMING.diceMs);
 }
 
-function revealRound() {
+function resolveAttack(total, dice) {
   const g = state.game;
-  const r = state.settings.rules;
-  const p1 = g.players.p1;
-  const p2 = g.players.p2;
-  const diff = Math.abs(p1.lastRoll - p2.lastRoll);
+  const h = state.settings.hpCrash;
+  const attacker = currentAttacker();
+  const defender = currentDefender();
 
-  let loser = null;
-  let winner = null;
-  let added = 0;
-
-  g.pendingContinuousPlayers = [];
-
-  if (p1.lastRoll === p2.lastRoll) {
-    added = intClamp(r.drawCharge, 0, 1000);
-    p1.charge += added;
-    p2.charge += added;
-    g.pendingContinuousPlayers = ["p1", "p2"];
-    g.message = `あいこ！ ${p1.lastRoll} - ${p2.lastRoll}\n両者にCharge +${added}`;
-  } else {
-    loser = p1.lastRoll < p2.lastRoll ? "p1" : "p2";
-    winner = loser === "p1" ? "p2" : "p1";
-    added = diff * intClamp(r.chargeMultiplier, 1, 100);
-    g.players[loser].charge += added;
-    g.players[loser].hp = clamp(g.players[loser].hp - diff * 3, 0, 100);
-    g.pendingContinuousPlayers = [loser];
-    g.message = `${g.players[winner].name} の勝ち！ ${p1.lastRoll} - ${p2.lastRoll}\n${g.players[loser].name} にCharge +${added}`;
+  if (!g || !attacker || !defender) {
+    return;
   }
 
-  g.status = STATUS.REVEAL;
-  g.lastLoser = loser;
-  g.lastWinner = winner;
+  const result = attackResultFromRoll(total);
+  let pulseTarget = defender.id;
+  let pulsePercent = 0;
+  let pulseDuration = h.normalPulseDurationMs;
+  let tone = "stim";
+  let message = "";
 
-  setMessage(g.message, loser ? "stim" : "normal");
-  render();
+  if (result.key === "fumble") {
+    attacker.debt = clamp(attacker.debt + result.debt, 0, 100);
+    pulseTarget = attacker.id;
+    pulsePercent = Math.max(h.minFumbleStimPercent, attacker.debt * 0.5);
+    pulseDuration = h.fumblePulseDurationMs;
+    tone = "critical";
+    message = `ファンブル！ ${attacker.name} に反動\n出目 ${total} / 蓄積 +${result.debt}`;
+  } else {
+    defender.hp = Math.max(0, defender.hp - result.damage);
+    defender.debt = clamp(defender.debt + result.debt, 0, 100);
 
-  state.ui.skipHandler = () => {
-    if (r.settlementStim && loser) {
-      beginSettlementCountdown(loser);
+    if (result.key === "graze") {
+      pulsePercent = Math.max(h.minGrazeStimPercent, defender.debt * 0.5);
+      pulseDuration = h.normalPulseDurationMs;
+      tone = "stim";
+    } else if (result.key === "hit") {
+      pulsePercent = Math.max(h.minHitStimPercent, defender.debt * 0.5);
+      pulseDuration = h.normalPulseDurationMs;
+      tone = "stim";
+    } else if (result.key === "strong") {
+      pulsePercent = Math.max(h.minStrongStimPercent, defender.debt * 0.5 + h.strongSettlementBonusPercent);
+      pulseDuration = h.strongPulseDurationMs;
+      tone = "critical";
     } else {
-      activatePendingContinuous();
-      endRound();
+      pulsePercent = Math.max(h.minCriticalStimPercent, defender.debt * 0.5 + h.criticalSettlementBonusPercent);
+      pulseDuration = h.criticalPulseDurationMs;
+      tone = "critical";
+    }
+
+    message = `${result.category}！ ${defender.name} に ${result.damage} ダメージ\n出目 ${total} / 蓄積 +${result.debt}`;
+  }
+
+  g.lastRoll = total;
+  g.lastCategory = result.category;
+  g.message = message;
+  state.ui.message = message;
+  state.ui.tone = tone;
+  g.status = STATUS.REVEAL;
+
+  startPlayerPulse(pulseTarget, pulsePercent, pulseDuration);
+  log(message.replaceAll("\n", " / "));
+  playSound(tone === "critical" ? "critical" : "hit");
+  speakMessage(message);
+
+  const winner = checkWinnerAfterAction(attacker, defender, result.key === "fumble" ? "attack-fumble" : "attack");
+  prepareAdvance(winner);
+  render();
+}
+
+function resolveRelease(total, dice) {
+  const g = state.game;
+  const h = state.settings.hpCrash;
+  const attacker = currentAttacker();
+  const defender = currentDefender();
+
+  if (!g || !attacker || !defender) {
+    return;
+  }
+
+  attacker.releaseUsed = true;
+
+  let category = "";
+  let message = "";
+  let tone = "critical";
+  let pulseA = 0;
+  let pulseB = 0;
+  let duration = h.releaseSuccessPulseDurationMs;
+
+  if (total <= 4) {
+    category = "暴発";
+    attacker.hp = Math.max(0, attacker.hp - h.releaseBurstSelfDamage);
+    pulseA = attacker.channel === "A" ? Math.max(h.minReleaseBurstStimPercent, attacker.debt * 0.5 + h.releaseBurstSelfBonusPercent) : 0;
+    pulseB = attacker.channel === "B" ? Math.max(h.minReleaseBurstStimPercent, attacker.debt * 0.5 + h.releaseBurstSelfBonusPercent) : 0;
+    duration = h.releaseBurstPulseDurationMs;
+    message = `蓄積解放：暴発！\n${attacker.name} に ${h.releaseBurstSelfDamage} ダメージ`;
+  } else if (total <= 7) {
+    category = "失敗";
+    defender.hp = Math.max(0, defender.hp - h.releaseFailureTargetDamage);
+    attacker.hp = Math.max(0, attacker.hp - h.releaseFailureSelfDamage);
+    pulseA = attacker.channel === "A"
+      ? Math.max(h.minReleaseFailureStimPercent, attacker.debt * 0.4 + h.releaseFailureSelfBonusPercent)
+      : Math.max(h.minReleaseFailureStimPercent, defender.debt * 0.4);
+    pulseB = attacker.channel === "B"
+      ? Math.max(h.minReleaseFailureStimPercent, attacker.debt * 0.4 + h.releaseFailureSelfBonusPercent)
+      : Math.max(h.minReleaseFailureStimPercent, defender.debt * 0.4);
+    duration = h.releaseFailurePulseDurationMs;
+    message = `蓄積解放：失敗\n${defender.name} に ${h.releaseFailureTargetDamage} / ${attacker.name} に ${h.releaseFailureSelfDamage}`;
+  } else if (total <= 10) {
+    category = "成功";
+    const damage = h.releaseSuccessBaseDamage + Math.floor(attacker.debt / Math.max(1, h.releaseDamageDebtDivisor));
+    defender.hp = Math.max(0, defender.hp - damage);
+    defender.debt = clamp(defender.debt + h.releaseSuccessTargetDebt, 0, 100);
+    const targetPercent = Math.max(h.minReleaseSuccessStimPercent, defender.debt * 0.5 + h.releaseSuccessTargetBonusPercent);
+    pulseA = defender.channel === "A" ? targetPercent : 0;
+    pulseB = defender.channel === "B" ? targetPercent : 0;
+    duration = h.releaseSuccessPulseDurationMs;
+    message = `蓄積解放：成功！\n${defender.name} に ${damage} ダメージ / 蓄積 +${h.releaseSuccessTargetDebt}`;
+  } else {
+    category = "大成功";
+    const damage = h.releaseGreatBaseDamage + Math.floor(attacker.debt / Math.max(1, h.releaseDamageDebtDivisor));
+    defender.hp = Math.max(0, defender.hp - damage);
+    defender.debt = clamp(defender.debt + h.releaseGreatTargetDebt, 0, 100);
+    const targetPercent = Math.max(h.minReleaseGreatStimPercent, defender.debt * 0.5 + h.releaseGreatTargetBonusPercent);
+    pulseA = defender.channel === "A" ? targetPercent : 0;
+    pulseB = defender.channel === "B" ? targetPercent : 0;
+    duration = h.releaseGreatPulseDurationMs;
+    message = `蓄積解放：大成功！\n${defender.name} に ${damage} ダメージ / 蓄積 +${h.releaseGreatTargetDebt}`;
+  }
+
+  g.lastRoll = total;
+  g.lastCategory = category;
+  g.message = message;
+  state.ui.message = message;
+  state.ui.tone = tone;
+  g.status = STATUS.REVEAL;
+
+  startPulseAB(pulseA, pulseB, duration);
+  log(message.replaceAll("\n", " / "));
+  playSound("critical");
+  speakMessage(message);
+
+  const winner = checkWinnerAfterAction(attacker, defender, "release");
+  prepareAdvance(winner);
+  render();
+}
+
+function attackResultFromRoll(total) {
+  const table = state.settings.hpCrash.table;
+
+  if (total === table.fumble.roll) {
+    return {
+      key: "fumble",
+      category: "ファンブル",
+      damage: 0,
+      debt: table.fumble.selfDebt
+    };
+  }
+
+  if (total >= table.graze.min && total <= table.graze.max) {
+    return {
+      key: "graze",
+      category: "かすり",
+      damage: table.graze.damage,
+      debt: table.graze.debt
+    };
+  }
+
+  if (total >= table.hit.min && total <= table.hit.max) {
+    return {
+      key: "hit",
+      category: "命中",
+      damage: table.hit.damage,
+      debt: table.hit.debt
+    };
+  }
+
+  if (total >= table.strong.min && total <= table.strong.max) {
+    return {
+      key: "strong",
+      category: "強打",
+      damage: table.strong.damage,
+      debt: table.strong.debt
+    };
+  }
+
+  return {
+    key: "critical",
+    category: "クリティカル",
+    damage: table.critical.damage,
+    debt: table.critical.debt
+  };
+}
+
+function checkWinnerAfterAction(attacker, defender, action) {
+  const g = state.game;
+
+  if (!g) {
+    return null;
+  }
+
+  const p1 = g.players.p1;
+  const p2 = g.players.p2;
+
+  if (p1.hp <= 0 && p2.hp <= 0) {
+    return {
+      winnerId: null,
+      reason: "両者のHPが0：引き分け"
+    };
+  }
+
+  if (defender.hp <= 0) {
+    return {
+      winnerId: attacker.id,
+      reason: `${defender.name} のHPが0：${attacker.name} の勝利`
+    };
+  }
+
+  if (attacker.hp <= 0) {
+    const reason = action === "release"
+      ? `${attacker.name} は蓄積解放の反動で倒れた：${defender.name} の勝利`
+      : `${attacker.name} のHPが0：${defender.name} の勝利`;
+
+    return {
+      winnerId: defender.id,
+      reason
+    };
+  }
+
+  if (g.turnLimit > 0 && g.turn >= g.turnLimit && attacker.id === "p2") {
+    if (p1.hp > p2.hp) {
+      return {
+        winnerId: "p1",
+        reason: `ターン上限到達：HPが多い ${p1.name} の勝利`
+      };
+    }
+
+    if (p2.hp > p1.hp) {
+      return {
+        winnerId: "p2",
+        reason: `ターン上限到達：HPが多い ${p2.name} の勝利`
+      };
+    }
+
+    if (p1.debt < p2.debt) {
+      return {
+        winnerId: "p1",
+        reason: `ターン上限到達：蓄積が少ない ${p1.name} の勝利`
+      };
+    }
+
+    if (p2.debt < p1.debt) {
+      return {
+        winnerId: "p2",
+        reason: `ターン上限到達：蓄積が少ない ${p2.name} の勝利`
+      };
+    }
+
+    return {
+      winnerId: null,
+      reason: "ターン上限到達：完全引き分け"
+    };
+  }
+
+  return null;
+}
+
+function prepareAdvance(winner) {
+  state.ui.skipHandler = () => {
+    if (winner) {
+      finishGame(winner.winnerId, winner.reason);
+    } else {
+      nextTurn();
     }
   };
 
-  setAutoTimer(state.ui.skipHandler, loser ? TIMING.stimHoldMs : TIMING.normalHoldMs);
-}
+  const hold = state.ui.tone === "critical" ? TIMING.criticalHoldMs : TIMING.stimHoldMs;
 
-function beginSettlementCountdown(loser) {
-  const g = state.game;
-  const ms = intClamp(state.settings.rules.settlementCountdownMs, 0, 10000);
-
-  clearAutoTimer();
-  g.status = STATUS.SETTLEMENT_COUNTDOWN;
-  g.message = `${g.players[loser].name} 精算カウントダウン`;
-  state.ui.countdownEnd = Date.now() + ms;
-
-  setMessage(g.message, "warning");
-  render();
-
-  state.ui.skipHandler = () => startSettlementPulse(loser);
-  setAutoTimer(state.ui.skipHandler, ms);
-}
-
-function startSettlementPulse(loser) {
-  const g = state.game;
-  const r = state.settings.rules;
-
-  clearAutoTimer();
-  g.status = STATUS.SETTLEMENT_PULSE;
-  g.message = `${g.players[loser].name} 精算！`;
-  state.ui.countdownEnd = 0;
-  state.ui.skipHandler = null;
-
-  startPulse(g.players[loser].channel, r.settlementBonusPercent, r.settlementDurationMs, "精算");
-  setMessage(g.message, "stim");
-  playSound("settlement");
-  render();
-
-  setAutoTimer(() => {
-    activatePendingContinuous();
-    endRound();
-  }, intClamp(r.settlementDurationMs, 100, 10000) + 250);
-}
-
-function activatePendingContinuous() {
-  if (!state.game || !Array.isArray(state.game.pendingContinuousPlayers)) {
-    return;
-  }
-
-  for (const id of state.game.pendingContinuousPlayers) {
-    if (state.game.players[id]) {
-      state.game.players[id].continuousActive = true;
+  state.timers.auto = setTimeout(() => {
+    if (state.game && state.game.status === STATUS.REVEAL && !state.paused) {
+      advanceMessage();
     }
-  }
-
-  state.game.pendingContinuousPlayers = [];
-}
-
-function endRound() {
-  const g = state.game;
-
-  clearAutoTimer();
-  g.players.p1.lastRoll = null;
-  g.players.p2.lastRoll = null;
-  g.lastLoser = null;
-  g.lastWinner = null;
-  state.ui.countdownEnd = 0;
-  state.ui.skipHandler = null;
-
-  if (!g.suddenDeath && g.round >= g.maxRounds) {
-    if (g.players.p1.charge === g.players.p2.charge) {
-      g.suddenDeath = true;
-      g.round += 1;
-      g.status = STATUS.WAIT_P1;
-      g.currentRoller = "p1";
-      g.message = `同点！ サドンデスへ。\n${g.players.p1.name} から振ってください。`;
-      setMessage(g.message, "warning");
-      render();
-      return;
-    }
-
-    beginFinalCountdown();
-    return;
-  }
-
-  if (g.suddenDeath && g.players.p1.charge !== g.players.p2.charge) {
-    beginFinalCountdown();
-    return;
-  }
-
-  g.round += 1;
-  g.status = STATUS.WAIT_P1;
-  g.currentRoller = "p1";
-  g.message = `ROUND ${g.round} 開始。\n${g.players.p1.name} のターンです。`;
-
-  setMessage(g.message, "normal");
-  render();
-}
-
-function beginFinalCountdown() {
-  const g = state.game;
-  const loser = g.players.p1.charge > g.players.p2.charge ? "p1" : "p2";
-  const winner = loser === "p1" ? "p2" : "p1";
-  const ms = intClamp(state.settings.rules.finalSettlementCountdownMs, 0, 10000);
-
-  clearAutoTimer();
-  g.status = STATUS.FINAL_COUNTDOWN;
-  g.lastLoser = loser;
-  g.lastWinner = winner;
-  g.message = `勝者 ${g.players[winner].name}。\n最終精算カウントダウン`;
-  state.ui.countdownEnd = Date.now() + ms;
-
-  setMessage(g.message, "warning");
-  render();
-
-  state.ui.skipHandler = () => startFinalPulse(loser);
-  setAutoTimer(state.ui.skipHandler, ms);
-}
-
-function startFinalPulse(loser) {
-  const g = state.game;
-  const r = state.settings.rules;
-
-  clearAutoTimer();
-  g.status = STATUS.FINAL_PULSE;
-  g.message = `${g.players[loser].name} 最終精算！`;
-  state.ui.countdownEnd = 0;
-  state.ui.skipHandler = null;
-
-  startPulse(g.players[loser].channel, r.finalSettlementBonusPercent, r.finalSettlementDurationMs, "最終精算");
-  setMessage(g.message, "critical");
-  playSound("settlement");
-  render();
-
-  setAutoTimer(showResult, intClamp(r.finalSettlementDurationMs, 100, 15000) + 350);
-}
-
-function showResult() {
-  const g = state.game;
-  const p1 = g.players.p1;
-  const p2 = g.players.p2;
-  const winner = p1.charge <= p2.charge ? p1 : p2;
-  const loser = winner === p1 ? p2 : p1;
-
-  stopAllOutputLocal();
-  state.ui.rotated = false;
-  applyRotation();
-
-  g.status = STATUS.RESULT;
-  g.resultReason = `${winner.name} の勝利！\n${winner.name}: Charge ${Math.round(winner.charge)} / ${loser.name}: Charge ${Math.round(loser.charge)}`;
-
-  setMessage(`${winner.name} の勝利です`, "result");
-  playSound("victory");
-  setPhase(PHASE.RESULT);
+  }, hold);
 }
 
 function advanceMessage() {
@@ -1446,219 +1618,116 @@ function advanceMessage() {
     return;
   }
 
-  const fn = state.ui.skipHandler;
-
-  if (fn) {
-    clearAutoTimer();
-    fn();
-  }
+  const handler = state.ui.skipHandler;
+  state.ui.skipHandler = null;
+  handler();
 }
 
-function canAdvance() {
-  if (!state.game || state.paused) {
-    return false;
-  }
-
-  return Boolean(state.ui.skipHandler);
-}
-
-function canRoll() {
-  if (!state.game || state.paused) {
-    return false;
-  }
-
-  return state.game.status === STATUS.WAIT_P1 || state.game.status === STATUS.WAIT_P2;
-}
-
-function phaseHintText() {
+function nextTurn() {
   const g = state.game;
 
   if (!g) {
-    return "";
-  }
-
-  if (g.status === STATUS.WAIT_P1) return `${g.players.p1.name} のロール待ち`;
-  if (g.status === STATUS.WAIT_P2) return `${g.players.p2.name} のロール待ち`;
-  if (g.status === STATUS.ROLLING_P1 || g.status === STATUS.ROLLING_P2) return "ダイスロール中";
-  if (g.status === STATUS.REVEAL) return "結果表示中";
-  if (g.status === STATUS.SETTLEMENT_COUNTDOWN) return "精算カウントダウン";
-  if (g.status === STATUS.SETTLEMENT_PULSE) return "精算出力中";
-  if (g.status === STATUS.FINAL_COUNTDOWN) return "最終精算カウントダウン";
-  if (g.status === STATUS.FINAL_PULSE) return "最終精算出力中";
-  return "進行中";
-}
-
-function countdownText() {
-  if (!state.ui.countdownEnd) {
-    return "";
-  }
-
-  const remain = Math.max(0, state.ui.countdownEnd - Date.now());
-  return `${(remain / 1000).toFixed(1)} 秒`;
-}
-
-function startDiceAnimation(roller) {
-  clearInterval(state.timers.dice);
-
-  state.timers.dice = setInterval(() => {
-    state.ui.rollFaces[roller] = randomDice();
-    const face = document.querySelector(`[data-dice-face="${roller}"]`);
-    if (face) {
-      face.textContent = DICE[state.ui.rollFaces[roller]];
-    }
-  }, TIMING.diceTickMs);
-
-  setTimeout(() => {
-    clearInterval(state.timers.dice);
-    state.timers.dice = null;
-  }, TIMING.diceMs);
-}
-
-function startPulse(channel, bonusPercent, durationMs, reason) {
-  state.output.eventPulse = {
-    channel,
-    bonusPercent: clamp(bonusPercent, 0, 100),
-    until: Date.now() + intClamp(durationMs, 100, 15000),
-    reason
-  };
-}
-
-function startOutputLoop() {
-  clearInterval(state.timers.output);
-  state.timers.output = setInterval(updateOutput, TIMING.outputTickMs);
-}
-
-function startLiveDomLoop() {
-  clearInterval(state.timers.live);
-  state.timers.live = setInterval(updateLiveDom, TIMING.gaugeTickMs);
-}
-
-function updateOutput() {
-  let A = 0;
-  let B = 0;
-
-  if (state.phase === PHASE.SAFE_LOCKED || state.paused) {
-    A = 0;
-    B = 0;
-  } else if (state.output.testHold) {
-    if (state.output.testHold.channel === "A") A = state.output.testHold.percent;
-    if (state.output.testHold.channel === "B") B = state.output.testHold.percent;
-  } else if (state.phase === PHASE.PLAYING && state.game) {
-    const r = state.settings.rules;
-
-    if (r.continuousStim) {
-      const onMs = intClamp(r.continuousOnMs, 100, 10000);
-      const offMs = intClamp(r.continuousOffMs, 100, 10000);
-      const active = Date.now() % (onMs + offMs) < onMs;
-
-      if (active) {
-        if (state.game.players.p1.continuousActive) {
-          A += chargeToOutput(state.game.players.p1.charge);
-        }
-
-        if (state.game.players.p2.continuousActive) {
-          B += chargeToOutput(state.game.players.p2.charge);
-        }
-      }
-    }
-
-    const pulse = state.output.eventPulse;
-
-    if (pulse) {
-      if (Date.now() <= pulse.until) {
-        if (pulse.channel === "A") A += pulse.bonusPercent;
-        if (pulse.channel === "B") B += pulse.bonusPercent;
-      } else {
-        state.output.eventPulse = null;
-      }
-    }
-  }
-
-  state.output.A = limitChannel("A", A);
-  state.output.B = limitChannel("B", B);
-  sendOutputThrottled(state.output.A, state.output.B);
-}
-
-function updateLiveDom() {
-  if (state.phase !== PHASE.PLAYING && state.phase !== PHASE.CHANNEL_TEST) {
     return;
   }
 
-  if (state.phase === PHASE.CHANNEL_TEST) {
-    setWidth(`[data-out-bar="A"]`, state.output.A);
-    setWidth(`[data-out-bar="B"]`, state.output.B);
-    return;
+  stopAllOutputLocal();
+
+  if (g.attackerId === "p1") {
+    g.attackerId = "p2";
+    g.defenderId = "p1";
+  } else {
+    g.attackerId = "p1";
+    g.defenderId = "p2";
+    g.turn += 1;
   }
 
+  g.status = STATUS.WAIT_ACTION;
+  g.message = `${playerName(g.attackerId)} のターン\n攻撃または蓄積解放を選択`;
+  state.ui.message = g.message;
+  state.ui.tone = "normal";
+  playSound("turn");
+  speakMessage(g.message);
+  render();
+}
+
+function finishGame(winnerId, reason) {
+  stopAllOutputLocal();
+
+  if (state.game) {
+    state.game.status = STATUS.RESULT;
+    state.game.resultReason = reason || "勝敗が決定しました";
+  }
+
+  log(`RESULT: ${reason}`);
+  playSound("result");
+  setPhase(PHASE.RESULT);
+}
+
+function giveUp(id) {
   if (!state.game) {
     return;
   }
 
-  const maxCharge = maxChargeValue();
+  const loser = state.game.players[id];
+  const winnerId = id === "p1" ? "p2" : "p1";
+  const winner = state.game.players[winnerId];
 
-  updatePlayerLive("p1", maxCharge);
-  updatePlayerLive("p2", maxCharge);
-
-  const countdown = document.getElementById("countdown-line");
-  if (countdown) {
-    countdown.textContent = countdownText();
+  if (!loser || !winner) {
+    return;
   }
 
-  const phaseHint = document.getElementById("phase-hint");
-  if (phaseHint) {
-    phaseHint.textContent = phaseHintText();
+  loser.gaveUp = true;
+  finishGame(winnerId, `${loser.name} がギブアップ：${winner.name} の勝利`);
+}
+
+function togglePause() {
+  state.paused = !state.paused;
+
+  if (state.paused) {
+    stopAllOutputLocal();
+    log("一時停止");
+  } else {
+    log("再開");
   }
 
-  const advanceHint = document.getElementById("advance-hint");
-  if (advanceHint) {
-    advanceHint.textContent = canAdvance() ? "タップでスキップ" : "自動進行します";
-    advanceHint.classList.toggle("muted-hint", !canAdvance());
+  render();
+}
+
+function toggleRotate() {
+  state.ui.rotated = !state.ui.rotated;
+  applyRotation();
+}
+
+function applyRotation() {
+  if (!appShell) {
+    return;
   }
+
+  appShell.classList.toggle("screen-rotated", state.ui.rotated);
 }
 
-function updatePlayerLive(id, maxCharge) {
-  const p = state.game.players[id];
-  const out = outputOf(id);
-
-  setText(`[data-charge-number="${id}"]`, Math.round(p.charge));
-  setText(`[data-dice-value="${id}"]`, p.lastRoll || "-");
-  setText(`[data-dice-result="${id}"]`, p.lastRoll || "-");
-
-  setGauge(`hp-${id}`, p.hp, 100, Math.round(p.hp));
-  setGauge(`charge-${id}`, p.charge, maxCharge, Math.round(p.charge));
-  setGauge(`output-${id}`, out, 100, formatPercent(out));
-
-  setMiniGauge(`hp-${id}`, p.hp, 100, Math.round(p.hp));
-  setMiniGauge(`charge-${id}`, p.charge, maxCharge, Math.round(p.charge));
-  setMiniGauge(`output-${id}`, out, 100, formatPercent(out));
+function safeReturnPrevious() {
+  const phase = state.safeReturnPhase || PHASE.CONNECT;
+  state.safeReason = "";
+  setPhase(phase === PHASE.PLAYING ? PHASE.CHANNEL_TEST : phase);
 }
 
-function setGauge(key, value, max, label) {
-  setWidth(`[data-gauge="${key}"]`, percent(value, max));
-  setText(`[data-gauge-text="${key}"]`, label);
+function safeReturnChannel() {
+  state.safeReason = "";
+  setPhase(PHASE.CHANNEL_TEST);
 }
 
-function setMiniGauge(key, value, max, label) {
-  setWidth(`[data-mini-gauge="${key}"]`, percent(value, max));
-  setText(`[data-mini-gauge-text="${key}"]`, label);
-}
-
-function setWidth(selector, pct) {
-  const el = document.querySelector(selector);
-  if (el) {
-    el.style.width = `${clamp(pct, 0, 100)}%`;
-  }
-}
-
-function setText(selector, text) {
-  const el = document.querySelector(selector);
-  if (el) {
-    el.textContent = text;
-  }
+function resetAccess() {
+  localStorage.removeItem(STORE.access);
+  localStorage.removeItem(STORE.disclaimer);
+  state.accessGranted = false;
+  state.disclaimerAccepted = false;
+  state.safeReason = "";
+  setPhase(PHASE.ACCESS);
 }
 
 function updateChannelSetting(el) {
-  const [kind, ch] = el.dataset.range.split("-");
+  const [kind, ch] = String(el.dataset.range || "").split("-");
   const cfg = state.settings.channels[ch];
 
   if (!cfg) {
@@ -1677,16 +1746,131 @@ function updateChannelSetting(el) {
   setText(`#${CSS.escape(el.dataset.range)}-value`, `${el.value}${suffix}`);
 }
 
-function chargeToOutput(charge) {
-  return clamp(Number(charge || 0) * 0.5, 0, 100);
-}
-
 function outputOf(id) {
-  return id === "p1" ? state.output.A : state.output.B;
+  if (!state.game) {
+    return 0;
+  }
+
+  const player = state.game.players[id];
+
+  if (!player) {
+    return 0;
+  }
+
+  return player.channel === "A" ? state.output.A : state.output.B;
 }
 
 function limitChannel(ch, value) {
-  return clamp(Math.min(value, state.settings.channels[ch].limit), 0, 100);
+  const cfg = state.settings.channels[ch];
+  const limit = cfg ? cfg.limit : 0;
+
+  return clamp(Math.min(Number(value || 0), limit), 0, 100);
+}
+
+function startPlayerPulse(playerId, percent, durationMs) {
+  const p = state.game?.players?.[playerId];
+
+  if (!p) {
+    return;
+  }
+
+  const A = p.channel === "A" ? percent : 0;
+  const B = p.channel === "B" ? percent : 0;
+  startPulseAB(A, B, durationMs);
+}
+
+function startPulseAB(A, B, durationMs) {
+  const safeA = limitChannel("A", A);
+  const safeB = limitChannel("B", B);
+
+  state.output.eventPulse = {
+    A: safeA,
+    B: safeB,
+    untilMs: Date.now() + Math.max(50, Number(durationMs || 300))
+  };
+
+  state.output.A = safeA;
+  state.output.B = safeB;
+  updateLiveDom();
+}
+
+function startChannelTest(ch) {
+  if (!state.settings.channels[ch]) {
+    return;
+  }
+
+  state.output.testHold = ch;
+  state.settings.channels[ch].tested = true;
+  saveSettings();
+
+  const percentValue = limitChannel(ch, state.settings.channels[ch].testPercent);
+
+  if (ch === "A") {
+    state.output.A = percentValue;
+    state.output.B = 0;
+  } else {
+    state.output.A = 0;
+    state.output.B = percentValue;
+  }
+
+  playSound("test");
+  updateLiveDom();
+}
+
+function stopChannelTest() {
+  if (!state.output.testHold) {
+    return;
+  }
+
+  state.output.testHold = null;
+  state.output.A = 0;
+  state.output.B = 0;
+  sendOutputPacket(0, 0);
+  updateLiveDom();
+  render();
+}
+
+function startOutputLoop() {
+  if (state.timers.output) {
+    clearInterval(state.timers.output);
+  }
+
+  state.timers.output = setInterval(() => {
+    tickOutput();
+  }, TIMING.outputTickMs);
+}
+
+function tickOutput() {
+  if (state.phase === PHASE.SAFE_LOCKED || state.paused) {
+    state.output.A = 0;
+    state.output.B = 0;
+    sendOutputThrottled(0, 0);
+    return;
+  }
+
+  if (state.output.testHold) {
+    const ch = state.output.testHold;
+    const value = limitChannel(ch, state.settings.channels[ch].testPercent);
+    state.output.A = ch === "A" ? value : 0;
+    state.output.B = ch === "B" ? value : 0;
+    sendOutputThrottled(state.output.A, state.output.B);
+    return;
+  }
+
+  if (state.output.eventPulse) {
+    if (Date.now() <= state.output.eventPulse.untilMs) {
+      state.output.A = limitChannel("A", state.output.eventPulse.A);
+      state.output.B = limitChannel("B", state.output.eventPulse.B);
+      sendOutputThrottled(state.output.A, state.output.B);
+      return;
+    }
+
+    state.output.eventPulse = null;
+  }
+
+  state.output.A = 0;
+  state.output.B = 0;
+  sendOutputThrottled(0, 0);
 }
 
 async function sendOutputThrottled(A, B) {
@@ -1793,191 +1977,376 @@ function stopAllOutputLocal() {
   state.output.B = 0;
   state.output.testHold = null;
   state.output.eventPulse = null;
+  state.device.lastPacket = "";
+  updateLiveDom();
 }
 
 function clearTimers() {
-  clearAutoTimer();
-  clearInterval(state.timers.dice);
-  state.timers.dice = null;
-  state.ui.skipHandler = null;
-  state.ui.countdownEnd = 0;
-}
-
-function clearAutoTimer() {
-  clearTimeout(state.timers.auto);
-  state.timers.auto = null;
-}
-
-function setAutoTimer(fn, ms) {
-  clearAutoTimer();
-
-  state.timers.auto = setTimeout(() => {
-    if (!state.paused && state.phase !== PHASE.SAFE_LOCKED) {
-      fn();
-    }
-  }, Math.max(0, ms));
-}
-
-function togglePause() {
-  state.paused = !state.paused;
-
-  if (state.paused) {
-    stopAllOutputLocal();
-    setMessage("一時停止しました", "normal");
-  } else {
-    setMessage("再開しました", "normal");
+  if (state.timers.auto) {
+    clearTimeout(state.timers.auto);
+    state.timers.auto = null;
   }
 
-  render();
+  if (state.timers.dice) {
+    clearInterval(state.timers.dice);
+    state.timers.dice = null;
+  }
 }
 
-function giveUp(playerId) {
+function startLiveDomLoop() {
+  if (state.timers.live) {
+    clearInterval(state.timers.live);
+  }
+
+  state.timers.live = setInterval(() => {
+    updateLiveDom();
+  }, TIMING.gaugeTickMs);
+}
+
+function updateLiveDom() {
+  updateOutputBars();
+  updateBattleGauges();
+  updateDiceDisplays();
+}
+
+function updateOutputBars() {
+  setBar("[data-out-bar='A']", state.output.A);
+  setBar("[data-out-bar='B']", state.output.B);
+}
+
+function updateBattleGauges() {
   if (!state.game) {
     return;
   }
 
-  const loser = state.game.players[playerId];
-  const winner = playerId === "p1" ? state.game.players.p2 : state.game.players.p1;
+  for (const id of ["p1", "p2"]) {
+    const p = state.game.players[id];
 
-  loser.charge += 50;
-  state.game.resultReason = `${loser.name} がギブアップ。\n${winner.name} の勝利です。`;
+    if (!p) {
+      continue;
+    }
 
-  stopAllOutputLocal();
-  state.ui.rotated = false;
-  setPhase(PHASE.RESULT);
+    setGauge(`hp-${id}`, p.hp, state.settings.hpCrash.initialHp);
+    setGauge(`charge-${id}`, p.debt, 100);
+    setGauge(`output-${id}`, outputOf(id), 100);
+    setText(`[data-gauge-text='hp-${id}']`, String(Math.round(p.hp)));
+    setText(`[data-gauge-text='charge-${id}']`, String(Math.round(p.debt)));
+    setText(`[data-gauge-text='output-${id}']`, formatPercent(outputOf(id)));
+
+    setMiniGauge(`hp-${id}`, p.hp, state.settings.hpCrash.initialHp);
+    setMiniGauge(`charge-${id}`, p.debt, 100);
+    setMiniGauge(`output-${id}`, outputOf(id), 100);
+    setText(`[data-mini-gauge-text='hp-${id}']`, String(Math.round(p.hp)));
+    setText(`[data-mini-gauge-text='charge-${id}']`, String(Math.round(p.debt)));
+    setText(`[data-mini-gauge-text='output-${id}']`, formatPercent(outputOf(id)));
+
+    setText(`[data-charge-number='${id}']`, String(Math.round(p.hp)));
+  }
 }
 
-function toggleRotate() {
-  if (state.phase !== PHASE.PLAYING) {
+function updateDiceDisplays() {
+  if (!state.game) {
     return;
   }
 
-  state.ui.rotated = !state.ui.rotated;
-  applyRotation();
+  for (const id of ["p1", "p2"]) {
+    const p = state.game.players[id];
+
+    if (!p) {
+      continue;
+    }
+
+    const active = state.game.attackerId === id;
+    const faces = state.ui.diceRolling && active ? state.ui.rollFaces[id] : p.lastDice;
+    const faceText = `${DICE[faces[0]]}${DICE[faces[1]]}`;
+    setText(`[data-dice-face='${id}']`, faceText);
+    setText(`[data-dice-result='${id}']`, p.lastRoll ? String(p.lastRoll) : "-");
+  }
 }
 
-function applyRotation() {
-  appShell.classList.toggle("screen-rotated", state.ui.rotated && state.phase === PHASE.PLAYING);
+function setGauge(key, value, max) {
+  setBar(`[data-gauge='${key}']`, percent(value, max));
 }
 
-function safeReturnPrevious() {
-  if (!state.accessGranted) {
-    setPhase(PHASE.ACCESS);
-    return;
-  }
-
-  if (!state.disclaimerAccepted) {
-    setPhase(PHASE.DISCLAIMER);
-    return;
-  }
-
-  const phase = state.safeReturnPhase || PHASE.CONNECT;
-
-  if (phase === PHASE.PLAYING) {
-    setPhase(PHASE.RULE_SETUP);
-    return;
-  }
-
-  setPhase(phase);
+function setMiniGauge(key, value, max) {
+  setBar(`[data-mini-gauge='${key}']`, percent(value, max));
 }
 
-function safeReturnChannel() {
-  if (!state.accessGranted) {
-    setPhase(PHASE.ACCESS);
-    return;
-  }
-
-  if (!state.disclaimerAccepted) {
-    setPhase(PHASE.DISCLAIMER);
-    return;
-  }
-
-  if (!state.device.connected) {
-    toast("先に接続または確認モードを選んでください");
-    setPhase(PHASE.CONNECT);
-    return;
-  }
-
-  setPhase(PHASE.CHANNEL_TEST);
+function setBar(selector, pct) {
+  document.querySelectorAll(selector).forEach((el) => {
+    el.style.width = `${clamp(pct, 0, 100)}%`;
+  });
 }
 
-function resetAccess() {
-  localStorage.removeItem(STORE.access);
-  localStorage.removeItem(STORE.disclaimer);
-
-  state.accessGranted = false;
-  state.disclaimerAccepted = false;
-  stopAllOutputLocal();
-  setPhase(PHASE.ACCESS);
+function setText(selector, text) {
+  document.querySelectorAll(selector).forEach((el) => {
+    el.textContent = text;
+  });
 }
 
-function guardAccess() {
-  if (!state.accessGranted) {
-    safeStop("Access Code未認証のため停止しました");
-    return false;
+function phaseHintText() {
+  if (!state.game) {
+    return "";
   }
 
-  return true;
+  if (state.paused) {
+    return "一時停止中";
+  }
+
+  if (state.game.status === STATUS.WAIT_ACTION) {
+    const attacker = currentAttacker();
+    const can = canRelease() ? " / 蓄積解放可能" : "";
+    return `${attacker?.name || ""} の操作待ち${can}`;
+  }
+
+  if (state.game.status === STATUS.ROLLING_ATTACK) {
+    return "攻撃ダイス判定中";
+  }
+
+  if (state.game.status === STATUS.ROLLING_RELEASE) {
+    return "蓄積解放判定中";
+  }
+
+  if (state.game.status === STATUS.REVEAL) {
+    return "結果表示中";
+  }
+
+  return "";
 }
 
-function setMessage(message, tone = "normal", speech = true) {
-  state.ui.message = message;
-  state.ui.tone = tone;
+function currentAttacker() {
+  return state.game?.players?.[state.game.attackerId] || null;
+}
 
-  if (state.game) {
-    state.game.message = message;
-  }
+function currentDefender() {
+  return state.game?.players?.[state.game.defenderId] || null;
+}
 
-  log(message);
-
-  if (speech) {
-    speak(message);
-  }
+function playerName(id) {
+  return state.game?.players?.[id]?.name || id.toUpperCase();
 }
 
 function colorPlayerNames(text) {
+  let html = escape(text);
+
   if (!state.game) {
-    return escape(text);
+    return html;
   }
 
-  let html = escape(text);
-  const p1 = escape(state.game.players.p1.name);
-  const p2 = escape(state.game.players.p2.name);
+  for (const id of ["p1", "p2"]) {
+    const p = state.game.players[id];
 
-  html = html.split(p1).join(`<span class="player-name-inline tone-text-1">${p1}</span>`);
-  html = html.split(p2).join(`<span class="player-name-inline tone-text-2">${p2}</span>`);
+    if (!p || !p.name) {
+      continue;
+    }
+
+    const safeName = escape(p.name);
+    const cls = `tone-text-${p.colorIndex}`;
+    html = html.split(safeName).join(`<span class="player-name-inline ${cls}">${safeName}</span>`);
+  }
 
   return html;
 }
 
-function maxChargeValue() {
-  if (!state.game) {
-    return 100;
+function loadVoices() {
+  if (!("speechSynthesis" in window)) {
+    state.ui.voices = [];
+    return;
   }
 
-  return Math.max(100, state.game.players.p1.charge, state.game.players.p2.charge);
+  state.ui.voices = window.speechSynthesis.getVoices() || [];
 }
 
-function randomDice() {
-  return Math.floor(Math.random() * state.settings.rules.diceSides) + 1;
+async function unlockAudio() {
+  if (state.audio.unlocked) {
+    return;
+  }
+
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+
+    if (!AudioContextClass) {
+      return;
+    }
+
+    state.audio.ctx = state.audio.ctx || new AudioContextClass();
+
+    if (state.audio.ctx.state === "suspended") {
+      await state.audio.ctx.resume();
+    }
+
+    state.audio.master = state.audio.master || state.audio.ctx.createGain();
+    state.audio.master.gain.value = state.settings.audio.soundVolume;
+    state.audio.master.connect(state.audio.ctx.destination);
+    state.audio.unlocked = true;
+  } catch {}
+}
+
+function playSound(kind) {
+  const audio = state.settings.audio;
+
+  if (!audio.soundEnabled || !state.audio.ctx || !state.audio.master) {
+    return;
+  }
+
+  try {
+    const ctx = state.audio.ctx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const now = ctx.currentTime;
+
+    let freq = 440;
+    let duration = 0.12;
+    let type = "sine";
+
+    if (kind === "roll") {
+      freq = 220;
+      duration = 0.08;
+      type = "square";
+    } else if (kind === "hit") {
+      freq = 520;
+      duration = 0.14;
+      type = "sawtooth";
+    } else if (kind === "critical") {
+      freq = 880;
+      duration = 0.22;
+      type = "sawtooth";
+    } else if (kind === "warning") {
+      freq = 160;
+      duration = 0.35;
+      type = "square";
+    } else if (kind === "result") {
+      freq = 660;
+      duration = 0.5;
+      type = "triangle";
+    } else if (kind === "turn") {
+      freq = 360;
+      duration = 0.1;
+      type = "triangle";
+    } else if (kind === "test") {
+      freq = 300;
+      duration = 0.08;
+      type = "sine";
+    }
+
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.18 * audio.soundVolume, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    osc.connect(gain);
+    gain.connect(state.audio.master);
+    osc.start(now);
+    osc.stop(now + duration + 0.03);
+  } catch {}
+}
+
+function speakMessage(text) {
+  const audio = state.settings.audio;
+
+  if (!audio.speechEnabled || !("speechSynthesis" in window)) {
+    return;
+  }
+
+  const value = String(text || "").replace(/\n/g, "。");
+
+  if (!value || value === state.audio.lastSpeech) {
+    return;
+  }
+
+  state.audio.lastSpeech = value;
+
+  try {
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(value);
+    utterance.lang = "ja-JP";
+    utterance.rate = audio.speechRate;
+    utterance.pitch = audio.speechPitch;
+    utterance.volume = audio.speechVolume;
+
+    if (audio.voiceName) {
+      const voice = state.ui.voices.find((v) => v.name === audio.voiceName);
+
+      if (voice) {
+        utterance.voice = voice;
+      }
+    }
+
+    window.speechSynthesis.speak(utterance);
+  } catch {}
+}
+
+function testSpeech() {
+  speakMessage("HPクラッシュバトル、音声テストです。");
+}
+
+function updateAudioValueLabel(key, value) {
+  setText(`#audio-value-${CSS.escape(key)}`, formatAudioValue(key, value));
+}
+
+function formatAudioValue(key, value) {
+  const n = Number(value || 0);
+
+  if (key.includes("Volume")) {
+    return `${Math.round(n * 100)}%`;
+  }
+
+  return n.toFixed(1);
+}
+
+function toast(message) {
+  if (!toastRoot) {
+    return;
+  }
+
+  const item = document.createElement("div");
+  item.className = "toast";
+  item.textContent = message;
+  toastRoot.appendChild(item);
+
+  setTimeout(() => {
+    item.classList.add("hide");
+  }, 2200);
+
+  setTimeout(() => {
+    item.remove();
+  }, 2800);
+}
+
+function log(message) {
+  if (!message) {
+    return;
+  }
+
+  const time = new Date().toLocaleTimeString("ja-JP", { hour12: false });
+  state.log.push(`${time} ${message}`);
+  state.log = state.log.slice(-100);
+
+  const box = document.querySelector(".log-box");
+
+  if (box) {
+    box.innerHTML = state.log.map(escape).join("<br>");
+  }
+}
+
+function scrollTopSoon() {
+  requestAnimationFrame(() => {
+    try {
+      window.scrollTo({ top: 0, behavior: "instant" });
+    } catch {
+      window.scrollTo(0, 0);
+    }
+  });
+}
+
+function randDice() {
+  return Math.floor(Math.random() * 6) + 1;
 }
 
 function percent(value, max) {
   return clamp((Number(value || 0) / Math.max(1, Number(max || 1))) * 100, 0, 100);
-}
-
-function clamp(value, min, max) {
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) {
-    return min;
-  }
-
-  return Math.max(min, Math.min(max, n));
-}
-
-function intClamp(value, min, max) {
-  return Math.round(clamp(value, min, max));
 }
 
 function formatPercent(value) {
@@ -1990,16 +2359,16 @@ function formatPercent(value) {
   return `${n.toFixed(1)}%`;
 }
 
-function formatAudioValue(key, value) {
-  if (key === "soundVolume" || key === "speechVolume") {
-    return `${Math.round(Number(value || 0) * 100)}%`;
-  }
-
-  return `${Number(value || 0).toFixed(1)}x`;
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, Number(value || 0)));
 }
 
-function updateAudioValueLabel(key, value) {
-  setText(`#audio-value-${CSS.escape(key)}`, formatAudioValue(key, value));
+function intClamp(value, min, max) {
+  return Math.round(clamp(value, min, max));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function escape(value) {
@@ -2009,145 +2378,4 @@ function escape(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
-}
-
-function log(message) {
-  if (!message) {
-    return;
-  }
-
-  const time = new Date().toLocaleTimeString("ja-JP", { hour12: false });
-  state.log.unshift(`${time} ${message}`);
-  state.log = state.log.slice(0, 80);
-}
-
-function toast(message) {
-  const el = document.createElement("div");
-  el.className = "toast";
-  el.textContent = message;
-  toastRoot.appendChild(el);
-
-  setTimeout(() => {
-    el.remove();
-  }, 2400);
-}
-
-function scrollTopSoon() {
-  requestAnimationFrame(() => {
-    window.scrollTo(0, 0);
-
-    if (document.scrollingElement) {
-      document.scrollingElement.scrollTop = 0;
-    }
-
-    if (appShell) {
-      appShell.scrollTop = 0;
-    }
-  });
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function loadVoices() {
-  if (!window.speechSynthesis) {
-    state.ui.voices = [];
-    return;
-  }
-
-  state.ui.voices = window.speechSynthesis
-    .getVoices()
-    .filter((voice) => voice.lang.toLowerCase().startsWith("ja") || voice.lang.toLowerCase().includes("jp"));
-}
-
-async function unlockAudio() {
-  if (state.audio.unlocked) {
-    return;
-  }
-
-  try {
-    const ctx = getAudioContext();
-
-    if (ctx.state === "suspended") {
-      await ctx.resume();
-    }
-
-    state.audio.unlocked = true;
-  } catch {}
-}
-
-function getAudioContext() {
-  if (!state.audio.ctx) {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    state.audio.ctx = new AudioContextClass();
-    state.audio.master = state.audio.ctx.createGain();
-    state.audio.master.gain.value = state.settings.audio.soundVolume;
-    state.audio.master.connect(state.audio.ctx.destination);
-  }
-
-  state.audio.master.gain.value = clamp(state.settings.audio.soundVolume, 0, 1);
-  return state.audio.ctx;
-}
-
-function playSound(type) {
-  if (!state.settings.audio.soundEnabled) {
-    return;
-  }
-
-  try {
-    const ctx = getAudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const freq = { roll: 180, decide: 520, settlement: 90, warning: 70, victory: 660 }[type] || 300;
-
-    osc.type = type === "warning" ? "square" : "sawtooth";
-    osc.frequency.value = freq;
-
-    gain.gain.setValueAtTime(0.001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.22, ctx.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
-
-    osc.connect(gain);
-    gain.connect(state.audio.master);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.2);
-  } catch {}
-}
-
-function speak(text) {
-  if (!state.settings.audio.speechEnabled || !window.speechSynthesis) {
-    return;
-  }
-
-  const normalized = String(text || "").replace(/\n/g, "。");
-
-  if (!normalized || normalized === state.audio.lastSpeech) {
-    return;
-  }
-
-  state.audio.lastSpeech = normalized;
-
-  try {
-    window.speechSynthesis.cancel();
-
-    const utter = new SpeechSynthesisUtterance(normalized);
-    utter.lang = "ja-JP";
-    utter.rate = clamp(state.settings.audio.speechRate, 0.5, 1.8);
-    utter.pitch = clamp(state.settings.audio.speechPitch, 0.5, 1.8);
-    utter.volume = clamp(state.settings.audio.speechVolume, 0, 1);
-
-    const voiceName = state.settings.audio.voiceName;
-    const voice = state.ui.voices.find((candidate) => candidate.name === voiceName);
-
-    if (voice) {
-      utter.voice = voice;
-    }
-
-    window.speechSynthesis.speak(utter);
-  } catch {}
-}
-
-function testSpeech() {
-  speak("DICE CHARGE BATTLE 音声テストです。");
 }
