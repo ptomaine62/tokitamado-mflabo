@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-08";
+const VERSION = "20260605-11";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -116,6 +116,11 @@ const state = {
   disclaimerAccepted: false,
   paused: false,
   safeReason: "",
+  safety: {
+    safeStopping: false,
+    interruptedDuringPlaying: false,
+    interruptedPhase: PHASE.CONNECT
+  },
   settings: loadSettings(),
   game: null,
   output: {
@@ -146,6 +151,7 @@ const state = {
     countdownEnd: 0,
     lastCountdownSecond: null,
     outputUnskippableUntil: 0,
+    suppressSpeechUntil: 0,
     skipHandler: null,
     voices: []
   },
@@ -247,12 +253,36 @@ function bindDocumentEvents() {
 function bindSafetyEvents() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
-      safeStop("画面が非表示になりました");
+      silenceSpeech(5000);
+
+      if (state.phase === PHASE.PLAYING) {
+        safeStop("画面が非表示になりました");
+      } else {
+        emergencyZeroOnly();
+      }
+    } else {
+      handleVisibleReturn();
     }
   });
 
   window.addEventListener("pagehide", emergencyZeroOnly);
   window.addEventListener("beforeunload", emergencyZeroOnly);
+}
+
+function handleVisibleReturn() {
+  silenceSpeech(1800);
+  state.device.sending = false;
+  state.device.lastPacket = "";
+
+  if (state.phase === PHASE.SAFE_LOCKED) {
+    stopAllOutputLocal(false);
+    render();
+    return;
+  }
+
+  if (state.phase === PHASE.PLAYING) {
+    safeStop("画面復帰時の安全停止");
+  }
 }
 
 function preventPlayingRubberBand(event) {
@@ -304,6 +334,7 @@ async function onClick(event) {
   else if (action === "emergency-stop") safeStop("緊急停止ボタンが押されました");
   else if (action === "zero") sendZeroRepeated();
   else if (action === "safe-return-previous") safeReturnPrevious();
+  else if (action === "safe-return-playing") restoreInterruptedPlaying();
   else if (action === "safe-return-channel") safeReturnChannel();
   else if (action === "reset-access") resetAccess();
   else if (action === "reset-channel-defaults") resetChannelDefaults();
@@ -817,6 +848,10 @@ function advanceHintText() {
     return "精算出力中：スキップ不可";
   }
 
+  if (state.paused) {
+    return "一時停止中";
+  }
+
   return "自動進行します";
 }
 
@@ -998,6 +1033,14 @@ function renderResult() {
 }
 
 function renderSafeLocked() {
+  const canReturnPlaying = Boolean(
+    state.game &&
+    state.safety.interruptedDuringPlaying &&
+    state.accessGranted &&
+    state.disclaimerAccepted &&
+    state.device.connected
+  );
+
   view.innerHTML = `
     <section class="safe-screen">
       <div class="card safe-card">
@@ -1006,6 +1049,11 @@ function renderSafeLocked() {
         <p class="muted">A/B出力は0%にリセットされました。復帰先を選んでください。</p>
         <div class="button-stack">
           <button class="btn danger wide stable-btn" data-action="zero">出力0%を再送信</button>
+          ${
+            canReturnPlaying
+              ? `<button class="btn primary wide stable-btn" data-action="safe-return-playing">プレイへ戻る（一時停止）</button>`
+              : ""
+          }
           <button class="btn primary wide stable-btn" data-action="safe-return-previous">直前の画面に戻る</button>
           <button class="btn cyan wide stable-btn" data-action="safe-return-channel">チャンネル設定にもどる</button>
           <button class="btn ghost wide stable-btn" data-action="reset-access">Access Codeからやり直す</button>
@@ -1327,6 +1375,8 @@ function startGame() {
   state.ui.lastCountdownSecond = null;
   state.ui.outputUnskippableUntil = 0;
   state.ui.skipHandler = null;
+  state.safety.interruptedDuringPlaying = false;
+  state.safety.interruptedPhase = PHASE.PLAYING;
 
   state.game = {
     status: STATUS.WAIT_P1,
@@ -1340,8 +1390,26 @@ function startGame() {
     message: `${p1Name} のターンです。\nダイスを振ってください。`,
     resultReason: "",
     players: {
-      p1: { name: p1Name, channel: "A", colorIndex: 1, hp: 100, charge: 0, lastRoll: null, continuousActive: false },
-      p2: { name: p2Name, channel: "B", colorIndex: 2, hp: 100, charge: 0, lastRoll: null, continuousActive: false }
+      p1: {
+        name: p1Name,
+        channel: "A",
+        colorIndex: 1,
+        hp: 100,
+        charge: 0,
+        outputCharge: 0,
+        lastRoll: null,
+        continuousActive: false
+      },
+      p2: {
+        name: p2Name,
+        channel: "B",
+        colorIndex: 2,
+        hp: 100,
+        charge: 0,
+        outputCharge: 0,
+        lastRoll: null,
+        continuousActive: false
+      }
     }
   };
 
@@ -1499,8 +1567,11 @@ function activatePendingContinuous() {
   }
 
   for (const id of state.game.pendingContinuousPlayers) {
-    if (state.game.players[id]) {
-      state.game.players[id].continuousActive = true;
+    const player = state.game.players[id];
+
+    if (player) {
+      player.continuousActive = true;
+      player.outputCharge = player.charge;
     }
   }
 
@@ -1628,6 +1699,7 @@ function showResult() {
 
   stopAllOutputLocal();
   state.ui.rotated = false;
+  state.safety.interruptedDuringPlaying = false;
   applyRotation();
 
   g.status = STATUS.RESULT;
@@ -1693,6 +1765,7 @@ function phaseHintText() {
     return "";
   }
 
+  if (state.paused) return "一時停止中";
   if (g.status === STATUS.WAIT_P1) return `${g.players.p1.name} のロール待ち`;
   if (g.status === STATUS.WAIT_P2) return `${g.players.p2.name} のロール待ち`;
   if (g.status === STATUS.ROLLING_P1 || g.status === STATUS.ROLLING_P2) return "ダイスロール中";
@@ -1720,6 +1793,15 @@ function countdownText() {
 }
 
 function updateCountdownVoice() {
+  if (state.phase === PHASE.SAFE_LOCKED) {
+    state.ui.lastCountdownSecond = null;
+    return;
+  }
+
+  if (Date.now() < Number(state.ui.suppressSpeechUntil || 0)) {
+    return;
+  }
+
   if (!state.ui.countdownEnd) {
     state.ui.lastCountdownSecond = null;
     return;
@@ -1804,18 +1886,18 @@ function updateOutput() {
   } else if (state.phase === PHASE.PLAYING && state.game) {
     const r = state.settings.rules;
 
-    if (r.continuousStim) {
+    if (r.continuousStim && isContinuousOutputAllowed()) {
       const onMs = intClamp(r.continuousOnMs, 100, 10000);
       const offMs = intClamp(r.continuousOffMs, 100, 10000);
       const active = Date.now() % (onMs + offMs) < onMs;
 
       if (active) {
         if (state.game.players.p1.continuousActive) {
-          A += chargeToOutput(state.game.players.p1.charge);
+          A += chargeToOutput(state.game.players.p1.outputCharge || 0);
         }
 
         if (state.game.players.p2.continuousActive) {
-          B += chargeToOutput(state.game.players.p2.charge);
+          B += chargeToOutput(state.game.players.p2.outputCharge || 0);
         }
       }
     }
@@ -1840,6 +1922,17 @@ function updateOutput() {
   state.output.A = limitChannel("A", A);
   state.output.B = limitChannel("B", B);
   sendOutputThrottled(state.output.A, state.output.B);
+}
+
+function isContinuousOutputAllowed() {
+  if (!state.game || state.paused) {
+    return false;
+  }
+
+  return (
+    state.game.status === STATUS.WAIT_P1 ||
+    state.game.status === STATUS.WAIT_P2
+  );
 }
 
 function updateLiveDom() {
@@ -2144,37 +2237,59 @@ function coyoteWaveStrength(ch) {
   return intClamp(cfg.pulseWidth || 20, 0, 100);
 }
 
-async function sendZeroRepeated() {
-  stopAllOutputLocal();
+async function sendZeroRepeated(updateDom = true) {
+  stopAllOutputLocal(updateDom);
 
   for (let i = 0; i < 6; i++) {
     await sendOutputPacket(0, 0);
     await sleep(35);
   }
 
-  updateLiveDom();
+  if (updateDom) {
+    updateLiveDom();
+  }
+
   log("ゼロ出力を送信しました");
 }
 
 function emergencyZeroOnly() {
-  stopAllOutputLocal();
+  silenceSpeech(2000);
+  stopAllOutputLocal(false);
   sendOutputPacket(0, 0);
   sendOutputPacket(0, 0);
   sendOutputPacket(0, 0);
 }
 
 async function safeStop(reason) {
+  if (state.safety.safeStopping) {
+    return;
+  }
+
+  state.safety.safeStopping = true;
   state.safeReason = reason || "安全停止しました";
   state.safeReturnPhase = state.phase === PHASE.SAFE_LOCKED ? state.safeReturnPhase : state.phase;
+  state.safety.interruptedPhase = state.phase;
 
-  stopAllOutputLocal();
+  if (state.phase === PHASE.PLAYING && state.game) {
+    state.safety.interruptedDuringPlaying = true;
+    state.safeReturnPhase = PHASE.PLAYING;
+  }
+
+  silenceSpeech(5000);
   clearTimers();
+  stopAllOutputLocal(false);
+
   playSound("warning");
   log(`SAFE STOP: ${state.safeReason}`);
-  await sendZeroRepeated();
 
+  await sendZeroRepeated(false);
+
+  state.device.sending = false;
+  state.device.lastPacket = "";
   state.ui.rotated = false;
   applyRotation();
+
+  state.safety.safeStopping = false;
 
   if (!state.accessGranted) {
     setPhase(PHASE.ACCESS);
@@ -2183,14 +2298,17 @@ async function safeStop(reason) {
   }
 }
 
-function stopAllOutputLocal() {
+function stopAllOutputLocal(updateDom = true) {
   state.output.A = 0;
   state.output.B = 0;
   state.output.testHold = null;
   state.output.eventPulse = null;
   state.device.lastPacket = "";
   state.ui.outputUnskippableUntil = 0;
-  updateLiveDom();
+
+  if (updateDom) {
+    updateLiveDom();
+  }
 }
 
 function clearTimers() {
@@ -2200,6 +2318,7 @@ function clearTimers() {
   state.ui.skipHandler = null;
   state.ui.countdownEnd = 0;
   state.ui.lastCountdownSecond = null;
+  state.ui.diceRolling = false;
 }
 
 function clearAutoTimer() {
@@ -2243,6 +2362,7 @@ function giveUp(playerId) {
 
   stopAllOutputLocal();
   state.ui.rotated = false;
+  state.safety.interruptedDuringPlaying = false;
   setPhase(PHASE.RESULT);
 }
 
@@ -2273,11 +2393,172 @@ function safeReturnPrevious() {
   const phase = state.safeReturnPhase || PHASE.CONNECT;
 
   if (phase === PHASE.PLAYING) {
+    restoreInterruptedPlaying();
+    return;
+  }
+
+  state.safety.interruptedDuringPlaying = false;
+  setPhase(phase);
+}
+
+function restoreInterruptedPlaying() {
+  if (!state.accessGranted) {
+    setPhase(PHASE.ACCESS);
+    return;
+  }
+
+  if (!state.disclaimerAccepted) {
+    setPhase(PHASE.DISCLAIMER);
+    return;
+  }
+
+  if (!state.device.connected) {
+    toast("先に接続または確認モードを選んでください");
+    setPhase(PHASE.CONNECT);
+    return;
+  }
+
+  if (!state.game) {
+    toast("復帰できるプレイ状態がありません");
     setPhase(PHASE.RULE_SETUP);
     return;
   }
 
-  setPhase(phase);
+  silenceSpeech(2500);
+  clearTimers();
+  stopAllOutputLocal(false);
+
+  state.device.sending = false;
+  state.device.lastPacket = "";
+  state.paused = true;
+  state.ui.rotated = false;
+  state.ui.outputUnskippableUntil = 0;
+  state.ui.countdownEnd = 0;
+  state.ui.lastCountdownSecond = null;
+  state.ui.skipHandler = null;
+  state.ui.diceRolling = false;
+
+  normalizeInterruptedGameStatus();
+
+  state.safety.interruptedDuringPlaying = false;
+  log("SAFE STOPからプレイへ復帰しました（一時停止）");
+  setPhase(PHASE.PLAYING);
+}
+
+function normalizeInterruptedGameStatus() {
+  const g = state.game;
+
+  if (!g) {
+    return;
+  }
+
+  if (g.status === STATUS.ROLLING_P1) {
+    g.status = STATUS.WAIT_P1;
+    g.currentRoller = "p1";
+    g.message = `${g.players.p1.name} のターンです。\nダイスを振ってください。`;
+    state.ui.message = g.message;
+    state.ui.tone = "normal";
+    return;
+  }
+
+  if (g.status === STATUS.ROLLING_P2) {
+    g.status = STATUS.WAIT_P2;
+    g.currentRoller = "p2";
+    g.message = `${g.players.p2.name} のターンです。\nダイスを振ってください。`;
+    state.ui.message = g.message;
+    state.ui.tone = "normal";
+    return;
+  }
+
+  if (
+    g.status === STATUS.SETTLEMENT_COUNTDOWN ||
+    g.status === STATUS.SETTLEMENT_PULSE
+  ) {
+    activatePendingContinuous();
+    clearRoundTransientState();
+    advanceToNextSafeTurnAfterInterrupt();
+    return;
+  }
+
+  if (
+    g.status === STATUS.FINAL_COUNTDOWN ||
+    g.status === STATUS.FINAL_PULSE
+  ) {
+    g.message = "最終精算中に中断されました。\n安全のため設定またはリザルトへ進んでください。";
+    state.ui.message = g.message;
+    state.ui.tone = "warning";
+    g.status = STATUS.RESULT;
+    return;
+  }
+
+  if (g.status === STATUS.REVEAL) {
+    g.message = `${g.message || "結果表示中に中断されました。"}\n一時停止中です。再開してタップで進行してください。`;
+    state.ui.message = g.message;
+    state.ui.tone = "warning";
+    state.ui.skipHandler = () => {
+      activatePendingContinuous();
+      endRound();
+    };
+    return;
+  }
+
+  if (g.status !== STATUS.WAIT_P1 && g.status !== STATUS.WAIT_P2) {
+    g.status = STATUS.WAIT_P1;
+    g.currentRoller = "p1";
+    g.message = `${g.players.p1.name} のターンです。\nダイスを振ってください。`;
+    state.ui.message = g.message;
+    state.ui.tone = "normal";
+  }
+}
+
+function clearRoundTransientState() {
+  const g = state.game;
+
+  if (!g) {
+    return;
+  }
+
+  g.players.p1.lastRoll = null;
+  g.players.p2.lastRoll = null;
+  g.lastLoser = null;
+  g.lastWinner = null;
+  state.ui.countdownEnd = 0;
+  state.ui.lastCountdownSecond = null;
+  state.ui.skipHandler = null;
+}
+
+function advanceToNextSafeTurnAfterInterrupt() {
+  const g = state.game;
+
+  if (!g) {
+    return;
+  }
+
+  if (!g.suddenDeath && g.round >= g.maxRounds) {
+    if (g.players.p1.charge === g.players.p2.charge) {
+      g.suddenDeath = true;
+      g.round += 1;
+      g.status = STATUS.WAIT_P1;
+      g.currentRoller = "p1";
+      g.message = `同点！ サドンデスへ。\n${g.players.p1.name} から振ってください。`;
+      state.ui.message = g.message;
+      state.ui.tone = "warning";
+      return;
+    }
+
+    g.status = STATUS.RESULT;
+    g.message = "最終精算前に中断されました。\n安全のため結果画面へ進めてください。";
+    state.ui.message = g.message;
+    state.ui.tone = "warning";
+    return;
+  }
+
+  g.round += 1;
+  g.status = STATUS.WAIT_P1;
+  g.currentRoller = "p1";
+  g.message = `ROUND ${g.round} 開始。\n${g.players.p1.name} のターンです。`;
+  state.ui.message = g.message;
+  state.ui.tone = "normal";
 }
 
 function safeReturnChannel() {
@@ -2297,6 +2578,7 @@ function safeReturnChannel() {
     return;
   }
 
+  state.safety.interruptedDuringPlaying = false;
   setPhase(PHASE.CHANNEL_TEST);
 }
 
@@ -2306,6 +2588,8 @@ function resetAccess() {
 
   state.accessGranted = false;
   state.disclaimerAccepted = false;
+  state.safety.interruptedDuringPlaying = false;
+  state.safety.safeStopping = false;
   stopAllOutputLocal();
   setPhase(PHASE.ACCESS);
 }
@@ -2421,6 +2705,10 @@ function log(message) {
 }
 
 function toast(message) {
+  if (!toastRoot) {
+    return;
+  }
+
   const el = document.createElement("div");
   el.className = "toast";
   el.textContent = message;
@@ -2514,16 +2802,33 @@ function playSound(type) {
   } catch {}
 }
 
+function silenceSpeech(durationMs = 1500) {
+  state.ui.suppressSpeechUntil = Date.now() + Math.max(0, Number(durationMs || 0));
+  state.ui.lastCountdownSecond = null;
+
+  if ("speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+  }
+}
+
 function speak(text) {
+  if (Date.now() < Number(state.ui.suppressSpeechUntil || 0)) {
+    return;
+  }
+
   if (!state.settings.audio.speechEnabled || !window.speechSynthesis) {
     return;
   }
 
   const normalized = String(text || "").replace(/\n/g, "。");
 
-  if (!normalized) {
+  if (!normalized || normalized === state.audio.lastSpeech) {
     return;
   }
+
+  state.audio.lastSpeech = normalized;
 
   try {
     window.speechSynthesis.cancel();
@@ -2546,6 +2851,7 @@ function speak(text) {
 }
 
 function testSpeech() {
+  state.audio.lastSpeech = "";
   speak("DICE CHARGE BATTLE 音声テストです。");
 }
 
