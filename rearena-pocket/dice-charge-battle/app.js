@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-13";
+const VERSION = "20260605-14";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -1086,7 +1086,17 @@ function advanceHintText() {
     return "自動進行します";
   }
 
-  if (state.game.status === STATUS.SETTLEMENT_PULSE || state.game.status === STATUS.FINAL_PULSE) {
+  if (
+    state.game.status === STATUS.SETTLEMENT_COUNTDOWN ||
+    state.game.status === STATUS.FINAL_COUNTDOWN
+  ) {
+    return "カウントダウン中：スキップ不可";
+  }
+
+  if (
+    state.game.status === STATUS.SETTLEMENT_PULSE ||
+    state.game.status === STATUS.FINAL_PULSE
+  ) {
     return "精算出力中：スキップ不可";
   }
 
@@ -1760,13 +1770,15 @@ function beginSettlementCountdown(loser) {
   g.message = `${g.players[loser].name} 精算カウントダウン`;
   state.ui.countdownEnd = Date.now() + ms;
   state.ui.lastCountdownSecond = null;
+  state.ui.skipHandler = null;
 
   setMessage(g.message, "warning", false);
   render();
   updateCountdownVoice();
 
-  state.ui.skipHandler = () => startSettlementPulse(loser);
-  setAutoTimer(state.ui.skipHandler, ms);
+  setAutoTimer(() => {
+    startSettlementPulse(loser);
+  }, ms);
 }
 
 function startSettlementPulse(loser) {
@@ -1875,13 +1887,15 @@ function beginFinalCountdown() {
   g.message = `勝者 ${g.players[winner].name}。\n最終精算カウントダウン`;
   state.ui.countdownEnd = Date.now() + ms;
   state.ui.lastCountdownSecond = null;
+  state.ui.skipHandler = null;
 
   setMessage(g.message, "warning", false);
   render();
   updateCountdownVoice();
 
-  state.ui.skipHandler = () => startFinalPulse(loser);
-  setAutoTimer(state.ui.skipHandler, ms);
+  setAutoTimer(() => {
+    startFinalPulse(loser);
+  }, ms);
 }
 
 function startFinalPulse(loser) {
@@ -1938,6 +1952,8 @@ function showResult() {
   const p2 = g.players.p2;
   const winner = p1.charge <= p2.charge ? p1 : p2;
   const loser = winner === p1 ? p2 : p1;
+  const winnerCharge = Math.round(winner.charge);
+  const loserCharge = Math.round(loser.charge);
 
   stopAllOutputLocal();
   state.ui.rotated = false;
@@ -1945,11 +1961,22 @@ function showResult() {
   applyRotation();
 
   g.status = STATUS.RESULT;
-  g.resultReason = `${winner.name} の勝利！\n${winner.name}: Charge ${Math.round(winner.charge)} / ${loser.name}: Charge ${Math.round(loser.charge)}`;
+  g.resultReason = `${winner.name} の勝利！\n${winner.name}: Charge ${winnerCharge} / ${loser.name}: Charge ${loserCharge}`;
 
-  setMessage(`${winner.name} の勝利です`, "result");
+  setMessage(`${winner.name} の勝利です`, "result", false);
   playSound("victory");
   setPhase(PHASE.RESULT);
+  announceResult(winner, loser, winnerCharge, loserCharge);
+}
+
+function announceResult(winner, loser, winnerCharge, loserCharge) {
+  state.audio.lastSpeech = "";
+
+  speak(
+    `リザルト。${winner.name} の勝利です。` +
+    `${winner.name}、チャージ ${winnerCharge}。` +
+    `${loser.name}、チャージ ${loserCharge}。`
+  );
 }
 
 function advanceMessage() {
@@ -1979,7 +2006,9 @@ function canAdvance() {
   }
 
   if (
+    state.game.status === STATUS.SETTLEMENT_COUNTDOWN ||
     state.game.status === STATUS.SETTLEMENT_PULSE ||
+    state.game.status === STATUS.FINAL_COUNTDOWN ||
     state.game.status === STATUS.FINAL_PULSE
   ) {
     return false;
@@ -2173,7 +2202,10 @@ function isContinuousOutputAllowed() {
 
   return (
     state.game.status === STATUS.WAIT_P1 ||
-    state.game.status === STATUS.WAIT_P2
+    state.game.status === STATUS.ROLLING_P1 ||
+    state.game.status === STATUS.WAIT_P2 ||
+    state.game.status === STATUS.ROLLING_P2 ||
+    state.game.status === STATUS.REVEAL
   );
 }
 
@@ -2748,10 +2780,16 @@ function normalizeInterruptedGameStatus() {
     g.message = `${g.message || "結果表示中に中断されました。"}\n一時停止中です。再開してタップまたはJoy-Conで進行してください。`;
     state.ui.message = g.message;
     state.ui.tone = "warning";
+
     state.ui.skipHandler = () => {
-      activatePendingContinuous();
-      endRound();
+      if (state.settings.rules.settlementStim && g.lastLoser) {
+        beginSettlementCountdown(g.lastLoser);
+      } else {
+        activatePendingContinuous();
+        endRound();
+      }
     };
+
     return;
   }
 
