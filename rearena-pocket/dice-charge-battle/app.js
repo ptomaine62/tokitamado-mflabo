@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-12";
+const VERSION = "20260605-13";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -17,6 +17,7 @@ const PHASE = {
   DISCLAIMER: "DISCLAIMER",
   CONNECT: "CONNECT",
   CHANNEL_TEST: "CHANNEL_TEST",
+  INPUT_SETUP: "INPUT_SETUP",
   RULE_SETUP: "RULE_SETUP",
   PLAYING: "PLAYING",
   RESULT: "RESULT",
@@ -129,6 +130,7 @@ const state = {
   phase: PHASE.ACCESS,
   previousPhase: PHASE.ACCESS,
   safeReturnPhase: PHASE.CONNECT,
+  inputReturnPhase: PHASE.CONNECT,
   accessGranted: false,
   disclaimerAccepted: false,
   paused: false,
@@ -167,6 +169,7 @@ const state = {
       p2: null
     },
     previousButtons: {},
+    currentButtons: {},
     holdStart: {},
     lastActionAt: 0,
     lastInputText: "Joy-Con未入力"
@@ -259,16 +262,18 @@ function normalizeSavedSettings() {
     r.finalSettlementBonusPercent = intClamp(r.finalSettlementBonusPercent, 0, 50);
   }
 
-  if (state.settings.gamepad) {
-    state.settings.gamepad.giveupHoldMs = intClamp(
-      state.settings.gamepad.giveupHoldMs || DEFAULT_SETTINGS.gamepad.giveupHoldMs,
-      500,
-      5000
-    );
-    state.settings.gamepad.enabled = Boolean(state.settings.gamepad.enabled);
-    state.settings.gamepad.swapPlayers = Boolean(state.settings.gamepad.swapPlayers);
-    state.settings.gamepad.debugLog = Boolean(state.settings.gamepad.debugLog);
+  if (!state.settings.gamepad) {
+    state.settings.gamepad = structuredClone(DEFAULT_SETTINGS.gamepad);
   }
+
+  state.settings.gamepad.giveupHoldMs = intClamp(
+    state.settings.gamepad.giveupHoldMs || DEFAULT_SETTINGS.gamepad.giveupHoldMs,
+    500,
+    5000
+  );
+  state.settings.gamepad.enabled = Boolean(state.settings.gamepad.enabled);
+  state.settings.gamepad.swapPlayers = Boolean(state.settings.gamepad.swapPlayers);
+  state.settings.gamepad.debugLog = Boolean(state.settings.gamepad.debugLog);
 
   saveSettings();
 }
@@ -329,7 +334,12 @@ function bindGamepadEvents() {
     log(`Gamepad接続: #${gp.index} ${gp.id || "Gamepad"}`);
     updateGamepadAssignments(readGamepads());
 
-    if (state.phase === PHASE.RULE_SETUP || state.phase === PHASE.PLAYING || state.phase === PHASE.SAFE_LOCKED) {
+    if (
+      state.phase === PHASE.INPUT_SETUP ||
+      state.phase === PHASE.RULE_SETUP ||
+      state.phase === PHASE.PLAYING ||
+      state.phase === PHASE.SAFE_LOCKED
+    ) {
       render();
     }
   });
@@ -343,6 +353,7 @@ function bindGamepadEvents() {
 
     delete state.gamepad.connected[gp.index];
     delete state.gamepad.previousButtons[gp.index];
+    delete state.gamepad.currentButtons[gp.index];
 
     for (const key of Object.keys(state.gamepad.holdStart)) {
       if (key.startsWith(`${gp.index}:`)) {
@@ -354,7 +365,12 @@ function bindGamepadEvents() {
     log(`Gamepad切断: #${gp.index} ${gp.id || "Gamepad"}`);
     updateGamepadAssignments(readGamepads());
 
-    if (state.phase === PHASE.RULE_SETUP || state.phase === PHASE.PLAYING || state.phase === PHASE.SAFE_LOCKED) {
+    if (
+      state.phase === PHASE.INPUT_SETUP ||
+      state.phase === PHASE.RULE_SETUP ||
+      state.phase === PHASE.PLAYING ||
+      state.phase === PHASE.SAFE_LOCKED
+    ) {
       render();
     }
   });
@@ -415,6 +431,8 @@ async function onClick(event) {
   else if (action === "go-rule-setup") setPhase(PHASE.RULE_SETUP);
   else if (action === "back-channel-test") setPhase(PHASE.CHANNEL_TEST);
   else if (action === "back-connect") setPhase(PHASE.CONNECT);
+  else if (action === "go-input-setup") goInputSetup();
+  else if (action === "back-input-return") backInputReturn();
   else if (action === "start-game") startGame();
   else if (action === "roll") rollCurrentDice();
   else if (action === "advance") advanceMessage();
@@ -432,6 +450,7 @@ async function onClick(event) {
   else if (action === "rematch") startGame();
   else if (action === "result-settings") setPhase(PHASE.RULE_SETUP);
   else if (action === "test-speech") testSpeech();
+  else if (action === "refresh-gamepads") refreshGamepads();
 }
 
 function onInput(event) {
@@ -465,6 +484,7 @@ function onInput(event) {
     const seconds = clamp(el.value, min, max);
     state.settings.gamepad[el.dataset.gamepadSec] = Math.round(seconds * 1000);
     saveSettings();
+    updateGamepadTestDom();
     return;
   }
 
@@ -476,6 +496,7 @@ function onInput(event) {
     if (section === "gamepad") {
       updateGamepadAssignments(readGamepads());
       updateGamepadStatusDom();
+      updateGamepadTestDom();
     }
 
     return;
@@ -567,6 +588,25 @@ function resetChannelDefaults() {
   render();
 }
 
+function goInputSetup() {
+  if (state.phase !== PHASE.INPUT_SETUP) {
+    state.inputReturnPhase = state.phase;
+  }
+
+  setPhase(PHASE.INPUT_SETUP);
+}
+
+function backInputReturn() {
+  const phase = state.inputReturnPhase || PHASE.CONNECT;
+
+  if (phase === PHASE.PLAYING) {
+    setPhase(PHASE.RULE_SETUP);
+    return;
+  }
+
+  setPhase(phase);
+}
+
 function setPhase(phase) {
   state.previousPhase = state.phase;
   state.phase = phase;
@@ -596,6 +636,7 @@ function render() {
   else if (state.phase === PHASE.DISCLAIMER) renderDisclaimer();
   else if (state.phase === PHASE.CONNECT) renderConnect();
   else if (state.phase === PHASE.CHANNEL_TEST) renderChannelTest();
+  else if (state.phase === PHASE.INPUT_SETUP) renderInputSetup();
   else if (state.phase === PHASE.RULE_SETUP) renderRuleSetup();
   else if (state.phase === PHASE.PLAYING) renderPlaying();
   else if (state.phase === PHASE.RESULT) renderResult();
@@ -699,7 +740,7 @@ function renderConnect() {
       ${header(PRODUCT_NAME, "低周波デバイス接続")}
       <div class="grid two">
         <div class="card">
-          <h2>接続</h2>
+          <h2>低周波デバイス接続</h2>
           <p class="muted">Web Bluetoothで低周波デバイスへ直接接続します。HTTPS環境と対応ブラウザが必要です。</p>
           <div class="button-stack">
             <button class="btn primary wide stable-btn" data-action="connect-known">かんたん接続</button>
@@ -709,9 +750,12 @@ function renderConnect() {
           </div>
         </div>
         <div class="card">
-          <h2>確認モード</h2>
-          <p class="muted">BLE送信なしで、画面・音・進行・出力ゲージだけ確認できます。</p>
-          <button class="btn orange wide stable-btn" data-action="connect-simulation">低周波デバイスなし確認モード</button>
+          <h2>入力デバイス / 確認モード</h2>
+          <p class="muted">Joy-ConはOS側でBluetooth接続した後、このアプリの入力デバイス設定で確認します。</p>
+          <div class="button-stack">
+            <button class="btn cyan wide stable-btn" data-action="go-input-setup">Joy-Con設定 / 接続ヘルプ</button>
+            <button class="btn orange wide stable-btn" data-action="connect-simulation">低周波デバイスなし確認モード</button>
+          </div>
         </div>
       </div>
       ${renderLog()}
@@ -735,6 +779,7 @@ function renderChannelTest() {
         <p class="muted">実機向けに、強度は0〜200、波形周波数は10〜240、波形強度は0〜100へ変換して送信します。</p>
         <div class="button-stack">
           <button class="btn ghost wide stable-btn" data-action="reset-channel-defaults">A/Bチャンネル設定を初期値へリセット</button>
+          <button class="btn cyan wide stable-btn" data-action="go-input-setup">Joy-Con設定 / 入力テスト</button>
           <button class="btn primary wide stable-btn" data-action="go-rule-setup" ${A.tested && B.tested ? "" : "disabled"}>
             A/Bテスト完了：ゲーム設定へ
           </button>
@@ -772,6 +817,68 @@ function rangeInput(id, label, value, min, max, step, unit) {
       <input id="${escape(id)}" type="range" min="${min}" max="${max}" step="${step}" value="${escape(value)}" data-range="${escape(id)}" />
       <b id="${escape(id)}-value">${escape(value)}${escape(unit)}</b>
     </label>
+  `;
+}
+
+function renderInputSetup() {
+  const gamepad = state.settings.gamepad;
+
+  view.innerHTML = `
+    <section class="screen">
+      ${header(PRODUCT_NAME, "Joy-Con設定 / 接続ヘルプ")}
+
+      <div class="card warning-card">
+        <h2>Joy-Con接続ヘルプ</h2>
+        <p>
+          Joy-Conは低周波デバイスのようにアプリ内から直接Bluetooth接続するのではなく、
+          端末のBluetooth設定で先にペアリングします。
+        </p>
+        <ol class="safety-list">
+          <li>端末のBluetooth設定画面を開きます。</li>
+          <li>Joy-Con側面の小さいシンクロボタンを長押しします。</li>
+          <li>LEDが流れるように点滅したら、端末側でJoy-Conを選んでペアリングします。</li>
+          <li>このアプリに戻り、Joy-ConのL/R/ZL/ZRを1回押します。</li>
+          <li>下の入力テストでP1/P2の反応を確認します。</li>
+        </ol>
+        <p class="muted">
+          iOS / Android / PC / ブラウザの組み合わせにより、Joy-Conの表示名やボタン番号が変わる場合があります。
+          反応が逆に見える場合は「左右のプレイヤーを入れ替える」を使ってください。
+        </p>
+      </div>
+
+      <div class="grid two">
+        <div class="card">
+          <h2>Joy-Con設定</h2>
+          <div class="setup-grid">
+            ${checkField("enabled", "Joy-Con操作を有効にする", gamepad.enabled, "gamepad")}
+            ${checkField("swapPlayers", "左右のプレイヤーを入れ替える", gamepad.swapPlayers, "gamepad")}
+            ${checkField("debugLog", "Joy-Con入力ログを表示する", gamepad.debugLog, "gamepad")}
+            ${gamepadSecondField("giveupHoldMs", "ギブアップ長押し（秒）", gamepad.giveupHoldMs, 0.5, 5, 0.1)}
+          </div>
+          <button class="btn ghost wide stable-btn" data-action="refresh-gamepads">認識状態を更新</button>
+        </div>
+
+        <div class="card">
+          <h2>認識状態</h2>
+          <div class="gamepad-status" id="gamepad-status">${gamepadStatusHtml()}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>入力テスト</h2>
+        <p class="muted">
+          実際にJoy-ConのL/R/ZL/ZRを押してください。割り当てられたプレイヤー側のカードが点灯します。
+          ギブアップは設定秒数の長押しで成立します。
+        </p>
+        <div id="gamepad-test">${gamepadTestHtml()}</div>
+      </div>
+
+      <div class="footer-safe">
+        <button class="btn ghost stable-btn" data-action="back-input-return">戻る</button>
+        <button class="btn ghost stable-btn" data-action="back-connect">接続画面へ</button>
+        <button class="btn danger stable-btn" data-action="emergency-stop">緊急停止</button>
+      </div>
+    </section>
   `;
 }
 
@@ -815,13 +922,16 @@ function renderRuleSetup() {
       <div class="card">
         <h2>Joy-Con操作</h2>
         <p class="muted">
-          初期割り当ては 左Joy-Con=P1 / 右Joy-Con=P2 です。L/Rでロール・スキップ、ZL/ZR長押しでギブアップします。
+          初期割り当ては 左Joy-Con=P1 / 右Joy-Con=P2 です。詳しい接続手順とテストはJoy-Con設定画面で確認できます。
         </p>
         <div class="setup-grid">
           ${checkField("enabled", "Joy-Con操作を有効にする", gamepad.enabled, "gamepad")}
           ${checkField("swapPlayers", "左右のプレイヤーを入れ替える", gamepad.swapPlayers, "gamepad")}
           ${checkField("debugLog", "Joy-Con入力ログを表示する", gamepad.debugLog, "gamepad")}
           ${gamepadSecondField("giveupHoldMs", "ギブアップ長押し（秒）", gamepad.giveupHoldMs, 0.5, 5, 0.1)}
+        </div>
+        <div class="button-stack">
+          <button class="btn cyan wide stable-btn" data-action="go-input-setup">Joy-Con設定 / 接続ヘルプ / 入力テスト</button>
         </div>
         <div class="gamepad-status" id="gamepad-status">${gamepadStatusHtml()}</div>
       </div>
@@ -2068,12 +2178,18 @@ function isContinuousOutputAllowed() {
 }
 
 function updateLiveDom() {
-  if (state.phase !== PHASE.PLAYING && state.phase !== PHASE.CHANNEL_TEST && state.phase !== PHASE.RULE_SETUP) {
+  if (
+    state.phase !== PHASE.PLAYING &&
+    state.phase !== PHASE.CHANNEL_TEST &&
+    state.phase !== PHASE.RULE_SETUP &&
+    state.phase !== PHASE.INPUT_SETUP
+  ) {
     return;
   }
 
-  if (state.phase === PHASE.RULE_SETUP) {
+  if (state.phase === PHASE.RULE_SETUP || state.phase === PHASE.INPUT_SETUP) {
     updateGamepadStatusDom();
+    updateGamepadTestDom();
     return;
   }
 
@@ -2796,6 +2912,8 @@ function pollGamepads() {
   updateGamepadAssignments(gamepads);
 
   if (!state.settings.gamepad.enabled) {
+    updateGamepadStatusDom();
+    updateGamepadTestDom();
     return;
   }
 
@@ -2804,6 +2922,7 @@ function pollGamepads() {
   }
 
   updateGamepadStatusDom();
+  updateGamepadTestDom();
 }
 
 function readGamepads() {
@@ -2815,6 +2934,20 @@ function readGamepads() {
     return Array.from(navigator.getGamepads()).filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+function refreshGamepads() {
+  const gamepads = readGamepads();
+
+  updateGamepadAssignments(gamepads);
+  updateGamepadStatusDom();
+  updateGamepadTestDom();
+
+  if (gamepads.length) {
+    toast(`${gamepads.length}個の入力デバイスを認識しました`);
+  } else {
+    toast("Joy-Conを認識していません。OS側で接続後、ボタンを押してください");
   }
 }
 
@@ -2884,6 +3017,8 @@ function pollGamepadButtons(gp) {
   const prev = state.gamepad.previousButtons[gp.index] || [];
   const justPressedButtons = [];
 
+  state.gamepad.currentButtons[gp.index] = pressed;
+
   for (let i = 0; i < pressed.length; i++) {
     if (pressed[i] && !prev[i]) {
       justPressedButtons.push(i);
@@ -2901,7 +3036,9 @@ function pollGamepadButtons(gp) {
 }
 
 function handleGamepadButtonLog(gp, buttonIndex, type) {
-  const text = `#${gp.index} button ${buttonIndex} ${type}`;
+  const role = gamepadRole(gp.index);
+  const roleText = role ? role.toUpperCase() : "未割当";
+  const text = `#${gp.index} ${roleText} button ${buttonIndex} ${type}`;
 
   state.gamepad.lastInputText = text;
 
@@ -3073,11 +3210,91 @@ function gamepadStatusHtml() {
   `;
 }
 
+function gamepadTestHtml() {
+  return `
+    <div class="grid two">
+      ${gamepadPlayerTestCard("p1")}
+      ${gamepadPlayerTestCard("p2")}
+    </div>
+  `;
+}
+
+function gamepadPlayerTestCard(role) {
+  const name = role === "p1" ? state.settings.players.p1.name || "P1" : state.settings.players.p2.name || "P2";
+  const index = state.gamepad.assignments[role];
+  const gp = readGamepads().find((item) => item.index === index);
+  const primaryButtons = role === "p1" ? GAMEPAD_BUTTONS.p1Primary : GAMEPAD_BUTTONS.p2Primary;
+  const giveupButtons = role === "p1" ? GAMEPAD_BUTTONS.p1Giveup : GAMEPAD_BUTTONS.p2Giveup;
+  const primary = isGamepadButtonsPressed(index, primaryButtons);
+  const giveup = isGamepadButtonsPressed(index, giveupButtons);
+  const holdRatio = gamepadGiveupHoldRatio(index, role);
+  const primaryLabel = role === "p1" ? "L / ロール・スキップ" : "R / ロール・スキップ";
+  const giveupLabel = role === "p1" ? "ZL / ギブアップ長押し" : "ZR / ギブアップ長押し";
+
+  return `
+    <div class="card channel-card player-tone-${role === "p1" ? "1" : "2"} ${primary || giveup ? "is-active" : ""}">
+      <h2>${escape(role.toUpperCase())} / ${escape(name)}</h2>
+      <p class="muted">${gp ? `#${gp.index} ${escape(gp.id || "Gamepad")}` : "未接続"}</p>
+
+      <div class="gamepad-test-row ${primary ? "active" : ""}">
+        <span>${escape(primaryLabel)}</span>
+        <b>${primary ? "ON" : "OFF"}</b>
+      </div>
+
+      <div class="gamepad-test-row ${giveup ? "active danger" : ""}">
+        <span>${escape(giveupLabel)}</span>
+        <b>${giveup ? "HOLD" : "OFF"}</b>
+      </div>
+
+      <div class="bar out">
+        <div class="bar-fill" style="width:${holdRatio}%"></div>
+      </div>
+      <p class="muted">長押し進行: ${Math.round(holdRatio)}%</p>
+    </div>
+  `;
+}
+
+function isGamepadButtonsPressed(gamepadIndex, buttonIndices) {
+  if (gamepadIndex === null || gamepadIndex === undefined) {
+    return false;
+  }
+
+  const buttons = state.gamepad.currentButtons[gamepadIndex] || [];
+
+  return anyButtonPressed(buttons, buttonIndices);
+}
+
+function gamepadGiveupHoldRatio(gamepadIndex, role) {
+  if (gamepadIndex === null || gamepadIndex === undefined) {
+    return 0;
+  }
+
+  const key = `${gamepadIndex}:${role}:giveup`;
+  const hold = state.gamepad.holdStart[key];
+
+  if (!hold) {
+    return 0;
+  }
+
+  const required = intClamp(state.settings.gamepad.giveupHoldMs, 500, 5000);
+  const elapsed = Date.now() - hold.startedAt;
+
+  return clamp((elapsed / required) * 100, 0, 100);
+}
+
 function updateGamepadStatusDom() {
   const el = document.getElementById("gamepad-status");
 
   if (el) {
     el.innerHTML = gamepadStatusHtml();
+  }
+}
+
+function updateGamepadTestDom() {
+  const el = document.getElementById("gamepad-test");
+
+  if (el) {
+    el.innerHTML = gamepadTestHtml();
   }
 }
 
