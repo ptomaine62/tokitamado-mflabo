@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-11";
+const VERSION = "20260605-12";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -50,7 +50,8 @@ const TIMING = {
   criticalHoldMs: 4700,
   resultHoldMs: 5200,
   outputTickMs: 50,
-  gaugeTickMs: 100
+  gaugeTickMs: 100,
+  gamepadTickMs: 50
 };
 
 const COUNTDOWN_FIXED_MS = 3000;
@@ -58,6 +59,16 @@ const SETTLEMENT_MIN_OUTPUT_PERCENT = 8;
 const FINAL_SETTLEMENT_MIN_OUTPUT_PERCENT = 12;
 const SETTLEMENT_MIN_DURATION_MS = 700;
 const FINAL_SETTLEMENT_MIN_DURATION_MS = 1500;
+
+const GAMEPAD_ACTION_COOLDOWN_MS = 250;
+const GAMEPAD_BUTTON_THRESHOLD = 0.55;
+
+const GAMEPAD_BUTTONS = {
+  p1Primary: [4],
+  p1Giveup: [6],
+  p2Primary: [5],
+  p2Giveup: [7]
+};
 
 const DICE = {
   1: "⚀",
@@ -101,6 +112,12 @@ const DEFAULT_SETTINGS = {
     speechPitch: 1.0,
     speechVolume: 1.0,
     voiceName: ""
+  },
+  gamepad: {
+    enabled: true,
+    swapPlayers: false,
+    giveupHoldMs: 2000,
+    debugLog: true
   }
 };
 
@@ -141,6 +158,18 @@ const state = {
     lastPacket: "",
     writeMode: "auto",
     notifyLog: []
+  },
+  gamepad: {
+    pollTimer: null,
+    connected: {},
+    assignments: {
+      p1: null,
+      p2: null
+    },
+    previousButtons: {},
+    holdStart: {},
+    lastActionAt: 0,
+    lastInputText: "Joy-Con未入力"
   },
   ui: {
     rotated: false,
@@ -187,9 +216,11 @@ function boot() {
   normalizeSavedSettings();
   bindDocumentEvents();
   bindSafetyEvents();
+  bindGamepadEvents();
   loadVoices();
   startOutputLoop();
   startLiveDomLoop();
+  startGamepadLoop();
   render();
   scrollTopSoon();
   log("起動しました");
@@ -226,6 +257,17 @@ function normalizeSavedSettings() {
     );
     r.settlementBonusPercent = intClamp(r.settlementBonusPercent, 0, 50);
     r.finalSettlementBonusPercent = intClamp(r.finalSettlementBonusPercent, 0, 50);
+  }
+
+  if (state.settings.gamepad) {
+    state.settings.gamepad.giveupHoldMs = intClamp(
+      state.settings.gamepad.giveupHoldMs || DEFAULT_SETTINGS.gamepad.giveupHoldMs,
+      500,
+      5000
+    );
+    state.settings.gamepad.enabled = Boolean(state.settings.gamepad.enabled);
+    state.settings.gamepad.swapPlayers = Boolean(state.settings.gamepad.swapPlayers);
+    state.settings.gamepad.debugLog = Boolean(state.settings.gamepad.debugLog);
   }
 
   saveSettings();
@@ -267,6 +309,55 @@ function bindSafetyEvents() {
 
   window.addEventListener("pagehide", emergencyZeroOnly);
   window.addEventListener("beforeunload", emergencyZeroOnly);
+}
+
+function bindGamepadEvents() {
+  window.addEventListener("gamepadconnected", (event) => {
+    const gp = event.gamepad;
+
+    if (!gp) {
+      return;
+    }
+
+    state.gamepad.connected[gp.index] = {
+      id: gp.id || `Gamepad ${gp.index}`,
+      index: gp.index,
+      connectedAt: Date.now()
+    };
+
+    state.gamepad.lastInputText = `接続: #${gp.index} ${gp.id || "Gamepad"}`;
+    log(`Gamepad接続: #${gp.index} ${gp.id || "Gamepad"}`);
+    updateGamepadAssignments(readGamepads());
+
+    if (state.phase === PHASE.RULE_SETUP || state.phase === PHASE.PLAYING || state.phase === PHASE.SAFE_LOCKED) {
+      render();
+    }
+  });
+
+  window.addEventListener("gamepaddisconnected", (event) => {
+    const gp = event.gamepad;
+
+    if (!gp) {
+      return;
+    }
+
+    delete state.gamepad.connected[gp.index];
+    delete state.gamepad.previousButtons[gp.index];
+
+    for (const key of Object.keys(state.gamepad.holdStart)) {
+      if (key.startsWith(`${gp.index}:`)) {
+        delete state.gamepad.holdStart[key];
+      }
+    }
+
+    state.gamepad.lastInputText = `切断: #${gp.index} ${gp.id || "Gamepad"}`;
+    log(`Gamepad切断: #${gp.index} ${gp.id || "Gamepad"}`);
+    updateGamepadAssignments(readGamepads());
+
+    if (state.phase === PHASE.RULE_SETUP || state.phase === PHASE.PLAYING || state.phase === PHASE.SAFE_LOCKED) {
+      render();
+    }
+  });
 }
 
 function handleVisibleReturn() {
@@ -368,10 +459,25 @@ function onInput(event) {
     return;
   }
 
+  if (el.dataset.gamepadSec) {
+    const min = Number(el.min);
+    const max = Number(el.max);
+    const seconds = clamp(el.value, min, max);
+    state.settings.gamepad[el.dataset.gamepadSec] = Math.round(seconds * 1000);
+    saveSettings();
+    return;
+  }
+
   if (el.dataset.check) {
     const section = el.dataset.section || "rules";
     state.settings[section][el.dataset.check] = el.checked;
     saveSettings();
+
+    if (section === "gamepad") {
+      updateGamepadAssignments(readGamepads());
+      updateGamepadStatusDom();
+    }
+
     return;
   }
 
@@ -673,6 +779,7 @@ function renderRuleSetup() {
   const r = state.settings.rules;
   const p = state.settings.players;
   const audio = state.settings.audio;
+  const gamepad = state.settings.gamepad;
 
   view.innerHTML = `
     <section class="screen">
@@ -703,6 +810,20 @@ function renderRuleSetup() {
           ${numberField("finalSettlementBonusPercent", "最終精算ボーナス%", r.finalSettlementBonusPercent, 0, 50, 1)}
           ${secondField("finalSettlementDurationMs", "最終精算時間（秒）", r.finalSettlementDurationMs, 1.5, 15, 0.1)}
         </div>
+      </div>
+
+      <div class="card">
+        <h2>Joy-Con操作</h2>
+        <p class="muted">
+          初期割り当ては 左Joy-Con=P1 / 右Joy-Con=P2 です。L/Rでロール・スキップ、ZL/ZR長押しでギブアップします。
+        </p>
+        <div class="setup-grid">
+          ${checkField("enabled", "Joy-Con操作を有効にする", gamepad.enabled, "gamepad")}
+          ${checkField("swapPlayers", "左右のプレイヤーを入れ替える", gamepad.swapPlayers, "gamepad")}
+          ${checkField("debugLog", "Joy-Con入力ログを表示する", gamepad.debugLog, "gamepad")}
+          ${gamepadSecondField("giveupHoldMs", "ギブアップ長押し（秒）", gamepad.giveupHoldMs, 0.5, 5, 0.1)}
+        </div>
+        <div class="gamepad-status" id="gamepad-status">${gamepadStatusHtml()}</div>
       </div>
 
       <div class="card">
@@ -744,6 +865,17 @@ function secondField(key, label, valueMs, min, max, step) {
     <label class="field-label">
       ${escape(label)}
       <input class="input" type="number" id="rule-sec-${escape(key)}" value="${escape(valueSec)}" min="${min}" max="${max}" step="${step}" data-rule-sec="${escape(key)}">
+    </label>
+  `;
+}
+
+function gamepadSecondField(key, label, valueMs, min, max, step) {
+  const valueSec = Number((Number(valueMs || 0) / 1000).toFixed(2));
+
+  return `
+    <label class="field-label">
+      ${escape(label)}
+      <input class="input" type="number" id="gamepad-sec-${escape(key)}" value="${escape(valueSec)}" min="${min}" max="${max}" step="${step}" data-gamepad-sec="${escape(key)}">
     </label>
   `;
 }
@@ -815,7 +947,7 @@ function renderPlaying() {
           ${state.paused ? `<div class="pause-banner">PAUSED：再開するまで進行しません</div>` : ""}
           <div class="phase-hint" id="phase-hint">${escape(phaseHintText())}</div>
           <div class="countdown-line" id="countdown-line">${countdownText()}</div>
-          <div class="message-advance-hint" id="advance-hint">${canAdvance() ? "タップでスキップ" : advanceHintText()}</div>
+          <div class="message-advance-hint" id="advance-hint">${canAdvance() ? "タップ / Joy-Conでスキップ" : advanceHintText()}</div>
 
           <div class="dice-area">
             ${renderDiceBox("p1")}
@@ -1936,7 +2068,12 @@ function isContinuousOutputAllowed() {
 }
 
 function updateLiveDom() {
-  if (state.phase !== PHASE.PLAYING && state.phase !== PHASE.CHANNEL_TEST) {
+  if (state.phase !== PHASE.PLAYING && state.phase !== PHASE.CHANNEL_TEST && state.phase !== PHASE.RULE_SETUP) {
+    return;
+  }
+
+  if (state.phase === PHASE.RULE_SETUP) {
+    updateGamepadStatusDom();
     return;
   }
 
@@ -1972,7 +2109,7 @@ function updateLiveDom() {
   const advanceHint = document.getElementById("advance-hint");
 
   if (advanceHint) {
-    advanceHint.textContent = canAdvance() ? "タップでスキップ" : advanceHintText();
+    advanceHint.textContent = canAdvance() ? "タップ / Joy-Conでスキップ" : advanceHintText();
     advanceHint.classList.toggle("muted-hint", !canAdvance());
   }
 }
@@ -2492,7 +2629,7 @@ function normalizeInterruptedGameStatus() {
   }
 
   if (g.status === STATUS.REVEAL) {
-    g.message = `${g.message || "結果表示中に中断されました。"}\n一時停止中です。再開してタップで進行してください。`;
+    g.message = `${g.message || "結果表示中に中断されました。"}\n一時停止中です。再開してタップまたはJoy-Conで進行してください。`;
     state.ui.message = g.message;
     state.ui.tone = "warning";
     state.ui.skipHandler = () => {
@@ -2643,6 +2780,305 @@ function maxChargeValue() {
 
 function randomDice() {
   return Math.floor(Math.random() * state.settings.rules.diceSides) + 1;
+}
+
+function startGamepadLoop() {
+  clearInterval(state.gamepad.pollTimer);
+
+  state.gamepad.pollTimer = setInterval(() => {
+    pollGamepads();
+  }, TIMING.gamepadTickMs);
+}
+
+function pollGamepads() {
+  const gamepads = readGamepads();
+
+  updateGamepadAssignments(gamepads);
+
+  if (!state.settings.gamepad.enabled) {
+    return;
+  }
+
+  for (const gp of gamepads) {
+    pollGamepadButtons(gp);
+  }
+
+  updateGamepadStatusDom();
+}
+
+function readGamepads() {
+  if (!navigator.getGamepads) {
+    return [];
+  }
+
+  try {
+    return Array.from(navigator.getGamepads()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function updateGamepadAssignments(gamepads) {
+  const list = Array.isArray(gamepads) ? gamepads : [];
+  const connectedIndexes = list.map((gp) => gp.index);
+
+  for (const gp of list) {
+    state.gamepad.connected[gp.index] = {
+      id: gp.id || `Gamepad ${gp.index}`,
+      index: gp.index,
+      connectedAt: state.gamepad.connected[gp.index]?.connectedAt || Date.now()
+    };
+  }
+
+  for (const index of Object.keys(state.gamepad.connected)) {
+    if (!connectedIndexes.includes(Number(index))) {
+      delete state.gamepad.connected[index];
+    }
+  }
+
+  const left = list.find(isLeftJoyCon);
+  const right = list.find(isRightJoyCon);
+  const fallback = list.slice().sort((a, b) => a.index - b.index);
+
+  let p1 = null;
+  let p2 = null;
+
+  if (!state.settings.gamepad.swapPlayers) {
+    p1 = left?.index ?? fallback[0]?.index ?? null;
+    p2 = right?.index ?? fallback.find((gp) => gp.index !== p1)?.index ?? null;
+  } else {
+    p1 = right?.index ?? fallback[0]?.index ?? null;
+    p2 = left?.index ?? fallback.find((gp) => gp.index !== p1)?.index ?? null;
+  }
+
+  state.gamepad.assignments.p1 = p1;
+  state.gamepad.assignments.p2 = p2;
+}
+
+function isLeftJoyCon(gp) {
+  const id = String(gp.id || "").toLowerCase();
+
+  return (
+    id.includes("joy-con (l)") ||
+    id.includes("joy-con l") ||
+    id.includes("joy con l") ||
+    id.includes("left joy") ||
+    id.includes("left")
+  );
+}
+
+function isRightJoyCon(gp) {
+  const id = String(gp.id || "").toLowerCase();
+
+  return (
+    id.includes("joy-con (r)") ||
+    id.includes("joy-con r") ||
+    id.includes("joy con r") ||
+    id.includes("right joy") ||
+    id.includes("right")
+  );
+}
+
+function pollGamepadButtons(gp) {
+  const pressed = gp.buttons.map((button) => Boolean(button && (button.pressed || button.value > GAMEPAD_BUTTON_THRESHOLD)));
+  const prev = state.gamepad.previousButtons[gp.index] || [];
+  const justPressedButtons = [];
+
+  for (let i = 0; i < pressed.length; i++) {
+    if (pressed[i] && !prev[i]) {
+      justPressedButtons.push(i);
+      handleGamepadButtonLog(gp, i, "press");
+    }
+  }
+
+  const role = gamepadRole(gp.index);
+
+  if (role) {
+    pollGamepadRoleButtons(gp, role, pressed, prev);
+  }
+
+  state.gamepad.previousButtons[gp.index] = pressed;
+}
+
+function handleGamepadButtonLog(gp, buttonIndex, type) {
+  const text = `#${gp.index} button ${buttonIndex} ${type}`;
+
+  state.gamepad.lastInputText = text;
+
+  if (state.settings.gamepad.debugLog) {
+    log(`Joy-Con入力: ${text}`);
+  }
+}
+
+function gamepadRole(index) {
+  if (state.gamepad.assignments.p1 === index) {
+    return "p1";
+  }
+
+  if (state.gamepad.assignments.p2 === index) {
+    return "p2";
+  }
+
+  return "";
+}
+
+function pollGamepadRoleButtons(gp, role, pressed, prev) {
+  const primaryButtons = role === "p1" ? GAMEPAD_BUTTONS.p1Primary : GAMEPAD_BUTTONS.p2Primary;
+  const giveupButtons = role === "p1" ? GAMEPAD_BUTTONS.p1Giveup : GAMEPAD_BUTTONS.p2Giveup;
+
+  const primaryPressed = anyButtonPressed(pressed, primaryButtons);
+  const primaryWasPressed = anyButtonPressed(prev, primaryButtons);
+
+  if (primaryPressed && !primaryWasPressed) {
+    handleGamepadPrimary(role);
+  }
+
+  const giveupPressed = anyButtonPressed(pressed, giveupButtons);
+  handleGamepadGiveupHold(gp.index, role, giveupPressed);
+}
+
+function anyButtonPressed(buttons, indices) {
+  for (const index of indices) {
+    if (buttons[index]) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function handleGamepadPrimary(role) {
+  if (!canGamepadAct()) {
+    return;
+  }
+
+  if (state.phase !== PHASE.PLAYING || !state.game) {
+    return;
+  }
+
+  if (canRoll() && state.game.currentRoller === role) {
+    state.gamepad.lastActionAt = Date.now();
+    log(`${role.toUpperCase()} Joy-Con ロール`);
+    rollCurrentDice();
+    return;
+  }
+
+  if (canAdvance()) {
+    state.gamepad.lastActionAt = Date.now();
+    log(`${role.toUpperCase()} Joy-Con スキップ`);
+    advanceMessage();
+  }
+}
+
+function handleGamepadGiveupHold(gamepadIndex, role, pressed) {
+  const key = `${gamepadIndex}:${role}:giveup`;
+
+  if (!pressed) {
+    delete state.gamepad.holdStart[key];
+    return;
+  }
+
+  if (!state.gamepad.holdStart[key]) {
+    state.gamepad.holdStart[key] = {
+      startedAt: Date.now(),
+      fired: false
+    };
+    return;
+  }
+
+  const hold = state.gamepad.holdStart[key];
+
+  if (hold.fired) {
+    return;
+  }
+
+  const required = intClamp(state.settings.gamepad.giveupHoldMs, 500, 5000);
+  const elapsed = Date.now() - hold.startedAt;
+
+  if (elapsed >= required) {
+    hold.fired = true;
+    handleGamepadGiveup(role);
+  }
+}
+
+function handleGamepadGiveup(role) {
+  if (!canGamepadAct()) {
+    return;
+  }
+
+  if (state.phase !== PHASE.PLAYING || !state.game) {
+    return;
+  }
+
+  if (state.game.status === STATUS.SETTLEMENT_PULSE || state.game.status === STATUS.FINAL_PULSE) {
+    return;
+  }
+
+  state.gamepad.lastActionAt = Date.now();
+  log(`${role.toUpperCase()} Joy-Con ギブアップ長押し`);
+  giveUp(role);
+}
+
+function canGamepadAct() {
+  if (!state.settings.gamepad.enabled) {
+    return false;
+  }
+
+  if (state.safety.safeStopping) {
+    return false;
+  }
+
+  if (state.phase === PHASE.SAFE_LOCKED) {
+    return false;
+  }
+
+  if (Date.now() - state.gamepad.lastActionAt < GAMEPAD_ACTION_COOLDOWN_MS) {
+    return false;
+  }
+
+  return true;
+}
+
+function gamepadStatusHtml() {
+  const gamepads = readGamepads();
+  updateGamepadAssignments(gamepads);
+
+  if (!navigator.getGamepads) {
+    return `
+      <div class="muted">このブラウザはGamepad APIに対応していません。</div>
+    `;
+  }
+
+  const p1Index = state.gamepad.assignments.p1;
+  const p2Index = state.gamepad.assignments.p2;
+  const p1 = gamepads.find((gp) => gp.index === p1Index);
+  const p2 = gamepads.find((gp) => gp.index === p2Index);
+
+  const items = gamepads.length
+    ? gamepads.map((gp) => {
+        const role = gamepadRole(gp.index);
+        const roleText = role ? role.toUpperCase() : "未割当";
+        return `<div class="mono-line">#${gp.index} ${escape(roleText)} / ${escape(gp.id || "Gamepad")}</div>`;
+      }).join("")
+    : `<div class="muted">Joy-Conを接続してボタンを押すと認識されます。</div>`;
+
+  return `
+    <div class="gamepad-summary">
+      <div class="mono-line">P1: ${p1 ? `#${p1.index} ${escape(p1.id || "Gamepad")}` : "未接続"}</div>
+      <div class="mono-line">P2: ${p2 ? `#${p2.index} ${escape(p2.id || "Gamepad")}` : "未接続"}</div>
+      <div class="mono-line">最新入力: ${escape(state.gamepad.lastInputText)}</div>
+      ${items}
+      <div class="muted">標準想定: P1=L(button 4), ZL(button 6) / P2=R(button 5), ZR(button 7)</div>
+    </div>
+  `;
+}
+
+function updateGamepadStatusDom() {
+  const el = document.getElementById("gamepad-status");
+
+  if (el) {
+    el.innerHTML = gamepadStatusHtml();
+  }
 }
 
 function percent(value, max) {
