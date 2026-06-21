@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-14";
+const VERSION = "20260605-15";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -40,19 +40,20 @@ const STATUS = {
 const STORE = {
   access: "dcb_access_granted_v3",
   disclaimer: "dcb_disclaimer_accepted_v3",
-  settings: "dcb_settings_v3"
+  settings: "dcb_settings_v4"
 };
 
 const TIMING = {
   diceMs: 720,
   diceTickMs: 55,
-  normalHoldMs: 3600,
-  stimHoldMs: 4200,
-  criticalHoldMs: 4700,
+  normalHoldMs: 5500,
+  stimHoldMs: 6500,
+  criticalHoldMs: 7000,
   resultHoldMs: 5200,
   outputTickMs: 50,
   gaugeTickMs: 100,
-  gamepadTickMs: 50
+  gamepadTickMs: 50,
+  revealNoSkipMs: 1200
 };
 
 const COUNTDOWN_FIXED_MS = 3000;
@@ -63,12 +64,48 @@ const FINAL_SETTLEMENT_MIN_DURATION_MS = 1500;
 
 const GAMEPAD_ACTION_COOLDOWN_MS = 250;
 const GAMEPAD_BUTTON_THRESHOLD = 0.55;
+const GIVEUP_BEEP_INTERVAL_MS = 360;
 
-const GAMEPAD_BUTTONS = {
-  p1Primary: [4],
-  p1Giveup: [6],
-  p2Primary: [5],
-  p2Giveup: [7]
+const BINDING_KEYS = {
+  p1Primary: "p1Primary",
+  p1Giveup: "p1Giveup",
+  p2Primary: "p2Primary",
+  p2Giveup: "p2Giveup"
+};
+
+const DEFAULT_BINDINGS = {
+  p1Primary: {
+    label: "P1 ロール / スキップ",
+    role: "p1",
+    kind: "primary",
+    gamepadId: "",
+    gamepadIndex: null,
+    buttonIndex: 4
+  },
+  p1Giveup: {
+    label: "P1 ギブアップ長押し",
+    role: "p1",
+    kind: "giveup",
+    gamepadId: "",
+    gamepadIndex: null,
+    buttonIndex: 6
+  },
+  p2Primary: {
+    label: "P2 ロール / スキップ",
+    role: "p2",
+    kind: "primary",
+    gamepadId: "",
+    gamepadIndex: null,
+    buttonIndex: 5
+  },
+  p2Giveup: {
+    label: "P2 ギブアップ長押し",
+    role: "p2",
+    kind: "giveup",
+    gamepadId: "",
+    gamepadIndex: null,
+    buttonIndex: 7
+  }
 };
 
 const DICE = {
@@ -116,9 +153,12 @@ const DEFAULT_SETTINGS = {
   },
   gamepad: {
     enabled: true,
+    mode: "custom",
     swapPlayers: false,
     giveupHoldMs: 2000,
-    debugLog: true
+    debugLog: true,
+    giveupBeep: true,
+    bindings: deepClone(DEFAULT_BINDINGS)
   }
 };
 
@@ -171,8 +211,10 @@ const state = {
     previousButtons: {},
     currentButtons: {},
     holdStart: {},
+    captureTarget: "",
     lastActionAt: 0,
-    lastInputText: "Joy-Con未入力"
+    lastInputText: "コントローラー未入力",
+    lastBeepAt: 0
   },
   ui: {
     rotated: false,
@@ -183,6 +225,7 @@ const state = {
     countdownEnd: 0,
     lastCountdownSecond: null,
     outputUnskippableUntil: 0,
+    messageUnskippableUntil: 0,
     suppressSpeechUntil: 0,
     skipHandler: null,
     voices: []
@@ -234,6 +277,7 @@ function normalizeSavedSettings() {
     const cfg = state.settings.channels[ch];
 
     if (!cfg) {
+      state.settings.channels[ch] = deepClone(DEFAULT_SETTINGS.channels[ch]);
       continue;
     }
 
@@ -243,29 +287,46 @@ function normalizeSavedSettings() {
     cfg.frequency = intClamp(cfg.frequency, 10, 240);
   }
 
-  if (state.settings.rules) {
-    const r = state.settings.rules;
+  if (!state.settings.rules) {
+    state.settings.rules = deepClone(DEFAULT_SETTINGS.rules);
+  }
 
-    r.settlementCountdownMs = COUNTDOWN_FIXED_MS;
-    r.finalSettlementCountdownMs = COUNTDOWN_FIXED_MS;
-    r.settlementDurationMs = intClamp(
-      r.settlementDurationMs || DEFAULT_SETTINGS.rules.settlementDurationMs,
-      SETTLEMENT_MIN_DURATION_MS,
-      10000
-    );
-    r.finalSettlementDurationMs = intClamp(
-      r.finalSettlementDurationMs || DEFAULT_SETTINGS.rules.finalSettlementDurationMs,
-      FINAL_SETTLEMENT_MIN_DURATION_MS,
-      15000
-    );
-    r.settlementBonusPercent = intClamp(r.settlementBonusPercent, 0, 50);
-    r.finalSettlementBonusPercent = intClamp(r.finalSettlementBonusPercent, 0, 50);
+  const r = state.settings.rules;
+  r.settlementCountdownMs = COUNTDOWN_FIXED_MS;
+  r.finalSettlementCountdownMs = COUNTDOWN_FIXED_MS;
+  r.settlementDurationMs = intClamp(
+    r.settlementDurationMs || DEFAULT_SETTINGS.rules.settlementDurationMs,
+    SETTLEMENT_MIN_DURATION_MS,
+    10000
+  );
+  r.finalSettlementDurationMs = intClamp(
+    r.finalSettlementDurationMs || DEFAULT_SETTINGS.rules.finalSettlementDurationMs,
+    FINAL_SETTLEMENT_MIN_DURATION_MS,
+    15000
+  );
+  r.settlementBonusPercent = intClamp(r.settlementBonusPercent, 0, 50);
+  r.finalSettlementBonusPercent = intClamp(r.finalSettlementBonusPercent, 0, 50);
+
+  if (!state.settings.audio) {
+    state.settings.audio = deepClone(DEFAULT_SETTINGS.audio);
   }
 
   if (!state.settings.gamepad) {
-    state.settings.gamepad = structuredClone(DEFAULT_SETTINGS.gamepad);
+    state.settings.gamepad = deepClone(DEFAULT_SETTINGS.gamepad);
   }
 
+  if (!state.settings.gamepad.bindings) {
+    state.settings.gamepad.bindings = deepClone(DEFAULT_BINDINGS);
+  }
+
+  for (const key of Object.keys(DEFAULT_BINDINGS)) {
+    state.settings.gamepad.bindings[key] = merge(
+      deepClone(DEFAULT_BINDINGS[key]),
+      state.settings.gamepad.bindings[key] || {}
+    );
+  }
+
+  state.settings.gamepad.mode = state.settings.gamepad.mode === "joycon" ? "joycon" : "custom";
   state.settings.gamepad.giveupHoldMs = intClamp(
     state.settings.gamepad.giveupHoldMs || DEFAULT_SETTINGS.gamepad.giveupHoldMs,
     500,
@@ -274,6 +335,7 @@ function normalizeSavedSettings() {
   state.settings.gamepad.enabled = Boolean(state.settings.gamepad.enabled);
   state.settings.gamepad.swapPlayers = Boolean(state.settings.gamepad.swapPlayers);
   state.settings.gamepad.debugLog = Boolean(state.settings.gamepad.debugLog);
+  state.settings.gamepad.giveupBeep = state.settings.gamepad.giveupBeep !== false;
 
   saveSettings();
 }
@@ -290,7 +352,7 @@ function bindDocumentEvents() {
     window.speechSynthesis.onvoiceschanged = () => {
       loadVoices();
 
-      if (state.phase === PHASE.RULE_SETUP) {
+      if (state.phase === PHASE.RULE_SETUP || state.phase === PHASE.INPUT_SETUP) {
         render();
       }
     };
@@ -356,7 +418,7 @@ function bindGamepadEvents() {
     delete state.gamepad.currentButtons[gp.index];
 
     for (const key of Object.keys(state.gamepad.holdStart)) {
-      if (key.startsWith(`${gp.index}:`)) {
+      if (key.startsWith(`${gp.index}:`) || key.includes(`:${gp.index}:`)) {
         delete state.gamepad.holdStart[key];
       }
     }
@@ -451,6 +513,11 @@ async function onClick(event) {
   else if (action === "result-settings") setPhase(PHASE.RULE_SETUP);
   else if (action === "test-speech") testSpeech();
   else if (action === "refresh-gamepads") refreshGamepads();
+  else if (action === "apply-joycon-preset") applyJoyconPreset();
+  else if (action === "clear-gamepad-bindings") clearGamepadBindings();
+  else if (action === "capture-binding") startBindingCapture(el.dataset.bindingKey || "");
+  else if (action === "cancel-binding-capture") cancelBindingCapture();
+  else if (action === "test-giveup-beep") playGiveupBeep(true);
 }
 
 function onInput(event) {
@@ -497,8 +564,17 @@ function onInput(event) {
       updateGamepadAssignments(readGamepads());
       updateGamepadStatusDom();
       updateGamepadTestDom();
+      updateBindingDom();
     }
 
+    return;
+  }
+
+  if (el.dataset.gamepadMode) {
+    state.settings.gamepad.mode = el.value === "joycon" ? "joycon" : "custom";
+    saveSettings();
+    updateGamepadAssignments(readGamepads());
+    render();
     return;
   }
 
@@ -545,9 +621,9 @@ function onPointerDown(event) {
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE.settings) || "null");
-    return merge(structuredClone(DEFAULT_SETTINGS), saved || {});
+    return merge(deepClone(DEFAULT_SETTINGS), saved || {});
   } catch {
-    return structuredClone(DEFAULT_SETTINGS);
+    return deepClone(DEFAULT_SETTINGS);
   }
 }
 
@@ -571,11 +647,27 @@ function merge(base, patch) {
   return base;
 }
 
+function deepClone(value) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+
+  return JSON.parse(JSON.stringify(value));
+}
+
+function cssEscape(value) {
+  if (window.CSS && typeof CSS.escape === "function") {
+    return CSS.escape(String(value));
+  }
+
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
 function resetChannelDefaults() {
   stopAllOutputLocal();
 
-  state.settings.channels.A = structuredClone(DEFAULT_SETTINGS.channels.A);
-  state.settings.channels.B = structuredClone(DEFAULT_SETTINGS.channels.B);
+  state.settings.channels.A = deepClone(DEFAULT_SETTINGS.channels.A);
+  state.settings.channels.B = deepClone(DEFAULT_SETTINGS.channels.B);
 
   saveSettings();
 
@@ -751,9 +843,9 @@ function renderConnect() {
         </div>
         <div class="card">
           <h2>入力デバイス / 確認モード</h2>
-          <p class="muted">Joy-ConはOS側でBluetooth接続した後、このアプリの入力デバイス設定で確認します。</p>
+          <p class="muted">Joy-Con、Bluetoothゲームパッド、USBゲームパッドをOS側で接続してから、このアプリで任意ボタンを割り当てできます。</p>
           <div class="button-stack">
-            <button class="btn cyan wide stable-btn" data-action="go-input-setup">Joy-Con設定 / 接続ヘルプ</button>
+            <button class="btn cyan wide stable-btn" data-action="go-input-setup">コントローラー設定 / 接続ヘルプ</button>
             <button class="btn orange wide stable-btn" data-action="connect-simulation">低周波デバイスなし確認モード</button>
           </div>
         </div>
@@ -779,7 +871,7 @@ function renderChannelTest() {
         <p class="muted">実機向けに、強度は0〜200、波形周波数は10〜240、波形強度は0〜100へ変換して送信します。</p>
         <div class="button-stack">
           <button class="btn ghost wide stable-btn" data-action="reset-channel-defaults">A/Bチャンネル設定を初期値へリセット</button>
-          <button class="btn cyan wide stable-btn" data-action="go-input-setup">Joy-Con設定 / 入力テスト</button>
+          <button class="btn cyan wide stable-btn" data-action="go-input-setup">コントローラー設定 / 入力テスト</button>
           <button class="btn primary wide stable-btn" data-action="go-rule-setup" ${A.tested && B.tested ? "" : "disabled"}>
             A/Bテスト完了：ゲーム設定へ
           </button>
@@ -825,37 +917,49 @@ function renderInputSetup() {
 
   view.innerHTML = `
     <section class="screen">
-      ${header(PRODUCT_NAME, "Joy-Con設定 / 接続ヘルプ")}
+      ${header(PRODUCT_NAME, "コントローラー設定 / 接続ヘルプ")}
 
       <div class="card warning-card">
-        <h2>Joy-Con接続ヘルプ</h2>
+        <h2>Bluetoothコントローラー接続ヘルプ</h2>
         <p>
-          Joy-Conは低周波デバイスのようにアプリ内から直接Bluetooth接続するのではなく、
+          Joy-ConやBluetoothゲームパッドは、低周波デバイスのようにアプリ内から直接接続するのではなく、
           端末のBluetooth設定で先にペアリングします。
         </p>
         <ol class="safety-list">
           <li>端末のBluetooth設定画面を開きます。</li>
-          <li>Joy-Con側面の小さいシンクロボタンを長押しします。</li>
-          <li>LEDが流れるように点滅したら、端末側でJoy-Conを選んでペアリングします。</li>
-          <li>このアプリに戻り、Joy-ConのL/R/ZL/ZRを1回押します。</li>
-          <li>下の入力テストでP1/P2の反応を確認します。</li>
+          <li>コントローラーをペアリングモードにします。Joy-Conの場合は側面の小さいシンクロボタンを長押しします。</li>
+          <li>端末側でコントローラーを選んでペアリングします。</li>
+          <li>このアプリに戻り、何かボタンを1回押します。</li>
+          <li>下の「ボタン登録」で、P1/P2の操作に好きなボタンを割り当てます。</li>
         </ol>
         <p class="muted">
-          iOS / Android / PC / ブラウザの組み合わせにより、Joy-Conの表示名やボタン番号が変わる場合があります。
-          反応が逆に見える場合は「左右のプレイヤーを入れ替える」を使ってください。
+          ブラウザ、OS、コントローラーによってボタン番号は変わります。必ずこの画面の入力テストで確認してください。
         </p>
       </div>
 
       <div class="grid two">
         <div class="card">
-          <h2>Joy-Con設定</h2>
+          <h2>入力方式</h2>
           <div class="setup-grid">
-            ${checkField("enabled", "Joy-Con操作を有効にする", gamepad.enabled, "gamepad")}
-            ${checkField("swapPlayers", "左右のプレイヤーを入れ替える", gamepad.swapPlayers, "gamepad")}
-            ${checkField("debugLog", "Joy-Con入力ログを表示する", gamepad.debugLog, "gamepad")}
+            ${checkField("enabled", "コントローラー操作を有効にする", gamepad.enabled, "gamepad")}
+            ${checkField("debugLog", "入力ログを表示する", gamepad.debugLog, "gamepad")}
+            ${checkField("giveupBeep", "ギブアップ長押し中にビープ音を鳴らす", gamepad.giveupBeep, "gamepad")}
             ${gamepadSecondField("giveupHoldMs", "ギブアップ長押し（秒）", gamepad.giveupHoldMs, 0.5, 5, 0.1)}
+            <label class="field-label">
+              入力モード
+              <select class="input" data-gamepad-mode="mode">
+                <option value="custom" ${gamepad.mode === "custom" ? "selected" : ""}>カスタム割り当て</option>
+                <option value="joycon" ${gamepad.mode === "joycon" ? "selected" : ""}>Joy-Conおすすめプリセット</option>
+              </select>
+            </label>
+            ${checkField("swapPlayers", "Joy-Conプリセット時に左右のプレイヤーを入れ替える", gamepad.swapPlayers, "gamepad")}
           </div>
-          <button class="btn ghost wide stable-btn" data-action="refresh-gamepads">認識状態を更新</button>
+          <div class="button-stack">
+            <button class="btn cyan wide stable-btn" data-action="apply-joycon-preset">Joy-Conおすすめプリセットを適用</button>
+            <button class="btn ghost wide stable-btn" data-action="clear-gamepad-bindings">割り当てをクリア</button>
+            <button class="btn ghost wide stable-btn" data-action="refresh-gamepads">認識状態を更新</button>
+            <button class="btn ghost wide stable-btn" data-action="test-giveup-beep">長押しビープ音テスト</button>
+          </div>
         </div>
 
         <div class="card">
@@ -865,10 +969,18 @@ function renderInputSetup() {
       </div>
 
       <div class="card">
-        <h2>入力テスト</h2>
+        <h2>ボタン割り当て</h2>
         <p class="muted">
-          実際にJoy-ConのL/R/ZL/ZRを押してください。割り当てられたプレイヤー側のカードが点灯します。
-          ギブアップは設定秒数の長押しで成立します。
+          「登録」を押してから、使いたいコントローラーの好きなボタンを押してください。
+          ギブアップは必ず長押し扱いになります。
+        </p>
+        <div id="binding-list">${bindingListHtml()}</div>
+      </div>
+
+      <div class="card">
+        <h2>入力テスト / ギブアップ長押し確認</h2>
+        <p class="muted">
+          割り当て済みボタンを押すとカードが点灯します。ギブアップ長押し中はゲージが伸び、ビープ音で進行が分かります。
         </p>
         <div id="gamepad-test">${gamepadTestHtml()}</div>
       </div>
@@ -880,6 +992,62 @@ function renderInputSetup() {
       </div>
     </section>
   `;
+}
+
+function bindingListHtml() {
+  const captureTarget = state.gamepad.captureTarget;
+
+  return `
+    <div class="setup-grid binding-grid">
+      ${bindingCard("p1Primary")}
+      ${bindingCard("p1Giveup")}
+      ${bindingCard("p2Primary")}
+      ${bindingCard("p2Giveup")}
+    </div>
+    ${
+      captureTarget
+        ? `
+          <div class="capture-banner">
+            <b>${escape(bindingLabel(captureTarget))}</b> に登録するボタンを押してください。
+            <button class="btn ghost stable-btn" data-action="cancel-binding-capture">登録キャンセル</button>
+          </div>
+        `
+        : ""
+    }
+  `;
+}
+
+function bindingCard(key) {
+  const b = state.settings.gamepad.bindings[key] || DEFAULT_BINDINGS[key];
+
+  return `
+    <div class="card binding-card player-tone-${b.role === "p1" ? "1" : "2"}">
+      <h3>${escape(b.label)}</h3>
+      <div class="mono-line">Device: ${escape(bindingDeviceText(b))}</div>
+      <div class="mono-line">Button: ${b.buttonIndex === null || b.buttonIndex === undefined ? "未登録" : escape(b.buttonIndex)}</div>
+      <button class="btn primary wide stable-btn" data-action="capture-binding" data-binding-key="${escape(key)}">この操作にボタン登録</button>
+    </div>
+  `;
+}
+
+function bindingLabel(key) {
+  return (state.settings.gamepad.bindings[key] || DEFAULT_BINDINGS[key] || {}).label || key;
+}
+
+function bindingDeviceText(binding) {
+  if (!binding) {
+    return "未登録";
+  }
+
+  if (binding.gamepadId) {
+    return binding.gamepadId;
+  }
+
+  if (binding.gamepadIndex !== null && binding.gamepadIndex !== undefined) {
+    return `#${binding.gamepadIndex}`;
+  }
+
+  return "任意 / 未固定";
 }
 
 function renderRuleSetup() {
@@ -920,18 +1088,17 @@ function renderRuleSetup() {
       </div>
 
       <div class="card">
-        <h2>Joy-Con操作</h2>
+        <h2>コントローラー操作</h2>
         <p class="muted">
-          初期割り当ては 左Joy-Con=P1 / 右Joy-Con=P2 です。詳しい接続手順とテストはJoy-Con設定画面で確認できます。
+          任意のBluetoothゲームパッドやJoy-Conの好きなボタンを割り当てできます。詳しい接続手順とテストは設定画面で確認できます。
         </p>
         <div class="setup-grid">
-          ${checkField("enabled", "Joy-Con操作を有効にする", gamepad.enabled, "gamepad")}
-          ${checkField("swapPlayers", "左右のプレイヤーを入れ替える", gamepad.swapPlayers, "gamepad")}
-          ${checkField("debugLog", "Joy-Con入力ログを表示する", gamepad.debugLog, "gamepad")}
+          ${checkField("enabled", "コントローラー操作を有効にする", gamepad.enabled, "gamepad")}
+          ${checkField("giveupBeep", "ギブアップ長押し中にビープ音を鳴らす", gamepad.giveupBeep, "gamepad")}
           ${gamepadSecondField("giveupHoldMs", "ギブアップ長押し（秒）", gamepad.giveupHoldMs, 0.5, 5, 0.1)}
         </div>
         <div class="button-stack">
-          <button class="btn cyan wide stable-btn" data-action="go-input-setup">Joy-Con設定 / 接続ヘルプ / 入力テスト</button>
+          <button class="btn cyan wide stable-btn" data-action="go-input-setup">コントローラー設定 / 接続ヘルプ / 入力テスト</button>
         </div>
         <div class="gamepad-status" id="gamepad-status">${gamepadStatusHtml()}</div>
       </div>
@@ -1055,9 +1222,10 @@ function renderPlaying() {
           <div class="round-label">${renderRoundLabel()}</div>
           ${renderMessageBox(state.ui.message || g.message, state.ui.tone)}
           ${state.paused ? `<div class="pause-banner">PAUSED：再開するまで進行しません</div>` : ""}
+          ${giveupOverlayHtml()}
           <div class="phase-hint" id="phase-hint">${escape(phaseHintText())}</div>
           <div class="countdown-line" id="countdown-line">${countdownText()}</div>
-          <div class="message-advance-hint" id="advance-hint">${canAdvance() ? "タップ / Joy-Conでスキップ" : advanceHintText()}</div>
+          <div class="message-advance-hint" id="advance-hint">${canAdvance() ? "タップ / コントローラーでスキップ" : advanceHintText()}</div>
 
           <div class="dice-area">
             ${renderDiceBox("p1")}
@@ -1081,9 +1249,53 @@ function renderPlaying() {
   updateLiveDom();
 }
 
+function giveupOverlayHtml() {
+  const active = activeGiveupHold();
+
+  if (!active) {
+    return `<div class="giveup-overlay" id="giveup-overlay" hidden></div>`;
+  }
+
+  return `
+    <div class="giveup-overlay active" id="giveup-overlay">
+      <div class="giveup-title">${escape(active.role.toUpperCase())} ギブアップ長押し中</div>
+      <div class="bar out">
+        <div class="bar-fill" style="width:${active.ratio}%"></div>
+      </div>
+      <div class="giveup-sub">${Math.round(active.ratio)}%</div>
+    </div>
+  `;
+}
+
+function activeGiveupHold() {
+  const holds = Object.keys(state.gamepad.holdStart);
+
+  for (const key of holds) {
+    const hold = state.gamepad.holdStart[key];
+
+    if (!hold || hold.fired || !hold.role || hold.kind !== "giveup") {
+      continue;
+    }
+
+    const required = intClamp(state.settings.gamepad.giveupHoldMs, 500, 5000);
+    const ratio = clamp(((Date.now() - hold.startedAt) / required) * 100, 0, 100);
+
+    return {
+      role: hold.role,
+      ratio
+    };
+  }
+
+  return null;
+}
+
 function advanceHintText() {
   if (!state.game) {
     return "自動進行します";
+  }
+
+  if (Date.now() < Number(state.ui.messageUnskippableUntil || 0)) {
+    return "結果表示中：少し待ってからスキップできます";
   }
 
   if (
@@ -1626,6 +1838,7 @@ function startGame() {
   state.ui.countdownEnd = 0;
   state.ui.lastCountdownSecond = null;
   state.ui.outputUnskippableUntil = 0;
+  state.ui.messageUnskippableUntil = 0;
   state.ui.skipHandler = null;
   state.safety.interruptedDuringPlaying = false;
   state.safety.interruptedPhase = PHASE.PLAYING;
@@ -1685,6 +1898,7 @@ function rollCurrentDice() {
   state.ui.skipHandler = null;
   state.ui.countdownEnd = 0;
   state.ui.lastCountdownSecond = null;
+  state.ui.messageUnskippableUntil = Date.now() + TIMING.revealNoSkipMs;
 
   setMessage(`${g.players[roller].name} がダイスを振った！`, "normal");
   playSound("roll");
@@ -1704,6 +1918,7 @@ function rollCurrentDice() {
       g.currentRoller = "p2";
       g.message = `${g.players.p1.name} は ${roll}。\n${g.players.p2.name} のターンです。`;
       setMessage(g.message, "normal");
+      state.ui.messageUnskippableUntil = Date.now() + TIMING.revealNoSkipMs;
       render();
     } else {
       g.status = STATUS.REVEAL;
@@ -1725,6 +1940,7 @@ function revealRound() {
   let added = 0;
 
   g.pendingContinuousPlayers = [];
+  state.ui.messageUnskippableUntil = Date.now() + TIMING.revealNoSkipMs;
 
   if (p1.lastRoll === p2.lastRoll) {
     added = intClamp(r.drawCharge, 0, 1000);
@@ -1771,6 +1987,7 @@ function beginSettlementCountdown(loser) {
   state.ui.countdownEnd = Date.now() + ms;
   state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
+  state.ui.messageUnskippableUntil = 0;
 
   setMessage(g.message, "warning", false);
   render();
@@ -1801,6 +2018,7 @@ function startSettlementPulse(loser) {
   state.ui.countdownEnd = 0;
   state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
+  state.ui.messageUnskippableUntil = 0;
   state.ui.outputUnskippableUntil = Date.now() + duration + 250;
 
   startPulse(player.channel, outputPercent, duration, "精算");
@@ -1843,6 +2061,7 @@ function endRound() {
   state.ui.countdownEnd = 0;
   state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
+  state.ui.messageUnskippableUntil = 0;
 
   if (!g.suddenDeath && g.round >= g.maxRounds) {
     if (g.players.p1.charge === g.players.p2.charge) {
@@ -1888,6 +2107,7 @@ function beginFinalCountdown() {
   state.ui.countdownEnd = Date.now() + ms;
   state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
+  state.ui.messageUnskippableUntil = 0;
 
   setMessage(g.message, "warning", false);
   render();
@@ -1918,6 +2138,7 @@ function startFinalPulse(loser) {
   state.ui.countdownEnd = 0;
   state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
+  state.ui.messageUnskippableUntil = 0;
   state.ui.outputUnskippableUntil = Date.now() + duration + 350;
 
   startPulse(player.channel, outputPercent, duration, "最終精算");
@@ -2002,6 +2223,10 @@ function canAdvance() {
   }
 
   if (isOutputUnskippable()) {
+    return false;
+  }
+
+  if (Date.now() < Number(state.ui.messageUnskippableUntil || 0)) {
     return false;
   }
 
@@ -2222,6 +2447,7 @@ function updateLiveDom() {
   if (state.phase === PHASE.RULE_SETUP || state.phase === PHASE.INPUT_SETUP) {
     updateGamepadStatusDom();
     updateGamepadTestDom();
+    updateBindingDom();
     return;
   }
 
@@ -2257,9 +2483,38 @@ function updateLiveDom() {
   const advanceHint = document.getElementById("advance-hint");
 
   if (advanceHint) {
-    advanceHint.textContent = canAdvance() ? "タップ / Joy-Conでスキップ" : advanceHintText();
+    advanceHint.textContent = canAdvance() ? "タップ / コントローラーでスキップ" : advanceHintText();
     advanceHint.classList.toggle("muted-hint", !canAdvance());
   }
+
+  updateGiveupOverlayDom();
+}
+
+function updateGiveupOverlayDom() {
+  const el = document.getElementById("giveup-overlay");
+
+  if (!el) {
+    return;
+  }
+
+  const active = activeGiveupHold();
+
+  if (!active) {
+    el.hidden = true;
+    el.classList.remove("active");
+    el.innerHTML = "";
+    return;
+  }
+
+  el.hidden = false;
+  el.classList.add("active");
+  el.innerHTML = `
+    <div class="giveup-title">${escape(active.role.toUpperCase())} ギブアップ長押し中</div>
+    <div class="bar out">
+      <div class="bar-fill" style="width:${active.ratio}%"></div>
+    </div>
+    <div class="giveup-sub">${Math.round(active.ratio)}%</div>
+  `;
 }
 
 function updatePlayerLive(id, maxCharge) {
@@ -2322,7 +2577,7 @@ function updateChannelSetting(el) {
   saveSettings();
 
   const suffix = kind === "limit" || kind === "test" ? "%" : "";
-  setText(`#${CSS.escape(el.dataset.range)}-value`, `${el.value}${suffix}`);
+  setText(`#${cssEscape(el.dataset.range)}-value`, `${el.value}${suffix}`);
 }
 
 function chargeToOutput(charge) {
@@ -2562,6 +2817,7 @@ async function safeStop(reason) {
 
   silenceSpeech(5000);
   clearTimers();
+  clearGamepadHoldState();
   stopAllOutputLocal(false);
 
   playSound("warning");
@@ -2645,6 +2901,7 @@ function giveUp(playerId) {
   loser.charge += 50;
   state.game.resultReason = `${loser.name} がギブアップ。\n${winner.name} の勝利です。`;
 
+  clearGamepadHoldState();
   stopAllOutputLocal();
   state.ui.rotated = false;
   state.safety.interruptedDuringPlaying = false;
@@ -2711,6 +2968,7 @@ function restoreInterruptedPlaying() {
 
   silenceSpeech(2500);
   clearTimers();
+  clearGamepadHoldState();
   stopAllOutputLocal(false);
 
   state.device.sending = false;
@@ -2718,6 +2976,7 @@ function restoreInterruptedPlaying() {
   state.paused = true;
   state.ui.rotated = false;
   state.ui.outputUnskippableUntil = 0;
+  state.ui.messageUnskippableUntil = 0;
   state.ui.countdownEnd = 0;
   state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
@@ -2777,7 +3036,7 @@ function normalizeInterruptedGameStatus() {
   }
 
   if (g.status === STATUS.REVEAL) {
-    g.message = `${g.message || "結果表示中に中断されました。"}\n一時停止中です。再開してタップまたはJoy-Conで進行してください。`;
+    g.message = `${g.message || "結果表示中に中断されました。"}\n一時停止中です。再開してタップまたはコントローラーで進行してください。`;
     state.ui.message = g.message;
     state.ui.tone = "warning";
 
@@ -2816,6 +3075,7 @@ function clearRoundTransientState() {
   state.ui.countdownEnd = 0;
   state.ui.lastCountdownSecond = null;
   state.ui.skipHandler = null;
+  state.ui.messageUnskippableUntil = 0;
 }
 
 function advanceToNextSafeTurnAfterInterrupt() {
@@ -2952,6 +3212,7 @@ function pollGamepads() {
   if (!state.settings.gamepad.enabled) {
     updateGamepadStatusDom();
     updateGamepadTestDom();
+    updateBindingDom();
     return;
   }
 
@@ -2961,6 +3222,7 @@ function pollGamepads() {
 
   updateGamepadStatusDom();
   updateGamepadTestDom();
+  updateBindingDom();
 }
 
 function readGamepads() {
@@ -2981,11 +3243,12 @@ function refreshGamepads() {
   updateGamepadAssignments(gamepads);
   updateGamepadStatusDom();
   updateGamepadTestDom();
+  updateBindingDom();
 
   if (gamepads.length) {
     toast(`${gamepads.length}個の入力デバイスを認識しました`);
   } else {
-    toast("Joy-Conを認識していません。OS側で接続後、ボタンを押してください");
+    toast("コントローラーを認識していません。OS側で接続後、ボタンを押してください");
   }
 }
 
@@ -3053,70 +3316,129 @@ function isRightJoyCon(gp) {
 function pollGamepadButtons(gp) {
   const pressed = gp.buttons.map((button) => Boolean(button && (button.pressed || button.value > GAMEPAD_BUTTON_THRESHOLD)));
   const prev = state.gamepad.previousButtons[gp.index] || [];
-  const justPressedButtons = [];
 
   state.gamepad.currentButtons[gp.index] = pressed;
 
   for (let i = 0; i < pressed.length; i++) {
     if (pressed[i] && !prev[i]) {
-      justPressedButtons.push(i);
       handleGamepadButtonLog(gp, i, "press");
+
+      if (state.gamepad.captureTarget) {
+        captureBinding(gp, i);
+      }
     }
   }
 
-  const role = gamepadRole(gp.index);
-
-  if (role) {
-    pollGamepadRoleButtons(gp, role, pressed, prev);
+  if (!state.gamepad.captureTarget) {
+    pollGamepadBindings(gp, pressed, prev);
   }
 
   state.gamepad.previousButtons[gp.index] = pressed;
 }
 
 function handleGamepadButtonLog(gp, buttonIndex, type) {
-  const role = gamepadRole(gp.index);
-  const roleText = role ? role.toUpperCase() : "未割当";
-  const text = `#${gp.index} ${roleText} button ${buttonIndex} ${type}`;
+  const text = `#${gp.index} ${gamepadRoleText(gp.index)} button ${buttonIndex} ${type}`;
 
   state.gamepad.lastInputText = text;
 
   if (state.settings.gamepad.debugLog) {
-    log(`Joy-Con入力: ${text}`);
+    log(`入力: ${text}`);
   }
 }
 
-function gamepadRole(index) {
-  if (state.gamepad.assignments.p1 === index) {
-    return "p1";
+function gamepadRoleText(index) {
+  const role = gamepadRole(index);
+
+  if (role) {
+    return role.toUpperCase();
   }
 
-  if (state.gamepad.assignments.p2 === index) {
-    return "p2";
+  return "未割当";
+}
+
+function gamepadRole(index) {
+  if (state.settings.gamepad.mode === "joycon") {
+    if (state.gamepad.assignments.p1 === index) {
+      return "p1";
+    }
+
+    if (state.gamepad.assignments.p2 === index) {
+      return "p2";
+    }
   }
 
   return "";
 }
 
-function pollGamepadRoleButtons(gp, role, pressed, prev) {
-  const primaryButtons = role === "p1" ? GAMEPAD_BUTTONS.p1Primary : GAMEPAD_BUTTONS.p2Primary;
-  const giveupButtons = role === "p1" ? GAMEPAD_BUTTONS.p1Giveup : GAMEPAD_BUTTONS.p2Giveup;
+function pollGamepadBindings(gp, pressed, prev) {
+  const bindings = state.settings.gamepad.bindings || {};
 
-  const primaryPressed = anyButtonPressed(pressed, primaryButtons);
-  const primaryWasPressed = anyButtonPressed(prev, primaryButtons);
+  for (const key of Object.keys(DEFAULT_BINDINGS)) {
+    const binding = bindings[key] || DEFAULT_BINDINGS[key];
 
-  if (primaryPressed && !primaryWasPressed) {
-    handleGamepadPrimary(role);
+    if (!bindingMatchesGamepad(binding, gp)) {
+      continue;
+    }
+
+    const buttonIndex = Number(binding.buttonIndex);
+
+    if (!Number.isFinite(buttonIndex) || buttonIndex < 0) {
+      continue;
+    }
+
+    const nowPressed = Boolean(pressed[buttonIndex]);
+    const wasPressed = Boolean(prev[buttonIndex]);
+
+    if (binding.kind === "primary") {
+      if (nowPressed && !wasPressed) {
+        handleGamepadPrimary(binding.role);
+      }
+    } else if (binding.kind === "giveup") {
+      handleGamepadGiveupHold(key, gp.index, binding.role, nowPressed);
+    }
   }
 
-  const giveupPressed = anyButtonPressed(pressed, giveupButtons);
-  handleGamepadGiveupHold(gp.index, role, giveupPressed);
+  releaseUnpressedGiveupHolds();
 }
 
-function anyButtonPressed(buttons, indices) {
-  for (const index of indices) {
-    if (buttons[index]) {
-      return true;
+function releaseUnpressedGiveupHolds() {
+  for (const key of Object.keys(state.gamepad.holdStart)) {
+    const hold = state.gamepad.holdStart[key];
+
+    if (!hold || hold.kind !== "giveup") {
+      continue;
     }
+
+    const gpButtons = state.gamepad.currentButtons[hold.gamepadIndex] || [];
+
+    if (!gpButtons[hold.buttonIndex]) {
+      delete state.gamepad.holdStart[key];
+    }
+  }
+}
+
+function bindingMatchesGamepad(binding, gp) {
+  if (!binding || !gp) {
+    return false;
+  }
+
+  if (state.settings.gamepad.mode === "joycon" && !binding.gamepadId && binding.gamepadIndex === null) {
+    const role = binding.role;
+    const assignedIndex = state.gamepad.assignments[role];
+
+    return gp.index === assignedIndex;
+  }
+
+  if (binding.gamepadId && gp.id === binding.gamepadId) {
+    return true;
+  }
+
+  if (binding.gamepadIndex !== null && binding.gamepadIndex !== undefined && gp.index === Number(binding.gamepadIndex)) {
+    return true;
+  }
+
+  if (!binding.gamepadId && (binding.gamepadIndex === null || binding.gamepadIndex === undefined)) {
+    return true;
   }
 
   return false;
@@ -3133,20 +3455,26 @@ function handleGamepadPrimary(role) {
 
   if (canRoll() && state.game.currentRoller === role) {
     state.gamepad.lastActionAt = Date.now();
-    log(`${role.toUpperCase()} Joy-Con ロール`);
+    log(`${role.toUpperCase()} コントローラー ロール`);
     rollCurrentDice();
     return;
   }
 
   if (canAdvance()) {
     state.gamepad.lastActionAt = Date.now();
-    log(`${role.toUpperCase()} Joy-Con スキップ`);
+    log(`${role.toUpperCase()} コントローラー スキップ`);
     advanceMessage();
   }
 }
 
-function handleGamepadGiveupHold(gamepadIndex, role, pressed) {
-  const key = `${gamepadIndex}:${role}:giveup`;
+function handleGamepadGiveupHold(bindingKey, gamepadIndex, role, pressed) {
+  const binding = state.settings.gamepad.bindings[bindingKey];
+
+  if (!binding) {
+    return;
+  }
+
+  const key = `${bindingKey}:${gamepadIndex}:${binding.buttonIndex}`;
 
   if (!pressed) {
     delete state.gamepad.holdStart[key];
@@ -3156,8 +3484,13 @@ function handleGamepadGiveupHold(gamepadIndex, role, pressed) {
   if (!state.gamepad.holdStart[key]) {
     state.gamepad.holdStart[key] = {
       startedAt: Date.now(),
-      fired: false
+      fired: false,
+      role,
+      kind: "giveup",
+      gamepadIndex,
+      buttonIndex: Number(binding.buttonIndex)
     };
+    playGiveupBeep(false);
     return;
   }
 
@@ -3169,6 +3502,11 @@ function handleGamepadGiveupHold(gamepadIndex, role, pressed) {
 
   const required = intClamp(state.settings.gamepad.giveupHoldMs, 500, 5000);
   const elapsed = Date.now() - hold.startedAt;
+
+  if (state.settings.gamepad.giveupBeep && Date.now() - state.gamepad.lastBeepAt >= GIVEUP_BEEP_INTERVAL_MS) {
+    state.gamepad.lastBeepAt = Date.now();
+    playGiveupBeep(false);
+  }
 
   if (elapsed >= required) {
     hold.fired = true;
@@ -3190,7 +3528,8 @@ function handleGamepadGiveup(role) {
   }
 
   state.gamepad.lastActionAt = Date.now();
-  log(`${role.toUpperCase()} Joy-Con ギブアップ長押し`);
+  log(`${role.toUpperCase()} コントローラー ギブアップ長押し`);
+  playGiveupCompleteSound();
   giveUp(role);
 }
 
@@ -3214,6 +3553,100 @@ function canGamepadAct() {
   return true;
 }
 
+function startBindingCapture(key) {
+  if (!DEFAULT_BINDINGS[key]) {
+    toast("不明な割り当てです");
+    return;
+  }
+
+  state.gamepad.captureTarget = key;
+  toast(`${DEFAULT_BINDINGS[key].label} に登録するボタンを押してください`);
+  updateBindingDom();
+}
+
+function cancelBindingCapture() {
+  state.gamepad.captureTarget = "";
+  updateBindingDom();
+}
+
+function captureBinding(gp, buttonIndex) {
+  const key = state.gamepad.captureTarget;
+
+  if (!key || !state.settings.gamepad.bindings[key]) {
+    return;
+  }
+
+  state.settings.gamepad.bindings[key].gamepadId = gp.id || "";
+  state.settings.gamepad.bindings[key].gamepadIndex = gp.index;
+  state.settings.gamepad.bindings[key].buttonIndex = buttonIndex;
+
+  state.gamepad.captureTarget = "";
+  state.settings.gamepad.mode = "custom";
+  saveSettings();
+
+  toast(`${state.settings.gamepad.bindings[key].label} を button ${buttonIndex} に登録しました`);
+  log(`割り当て: ${state.settings.gamepad.bindings[key].label} / #${gp.index} / button ${buttonIndex}`);
+
+  updateBindingDom();
+  updateGamepadTestDom();
+  updateGamepadStatusDom();
+}
+
+function applyJoyconPreset() {
+  const gamepads = readGamepads();
+
+  updateGamepadAssignments(gamepads);
+
+  const p1Index = state.gamepad.assignments.p1;
+  const p2Index = state.gamepad.assignments.p2;
+  const p1 = gamepads.find((gp) => gp.index === p1Index);
+  const p2 = gamepads.find((gp) => gp.index === p2Index);
+
+  state.settings.gamepad.mode = "joycon";
+  state.settings.gamepad.bindings = deepClone(DEFAULT_BINDINGS);
+
+  state.settings.gamepad.bindings.p1Primary.gamepadId = p1?.id || "";
+  state.settings.gamepad.bindings.p1Primary.gamepadIndex = p1?.index ?? null;
+  state.settings.gamepad.bindings.p1Primary.buttonIndex = 4;
+
+  state.settings.gamepad.bindings.p1Giveup.gamepadId = p1?.id || "";
+  state.settings.gamepad.bindings.p1Giveup.gamepadIndex = p1?.index ?? null;
+  state.settings.gamepad.bindings.p1Giveup.buttonIndex = 6;
+
+  state.settings.gamepad.bindings.p2Primary.gamepadId = p2?.id || "";
+  state.settings.gamepad.bindings.p2Primary.gamepadIndex = p2?.index ?? null;
+  state.settings.gamepad.bindings.p2Primary.buttonIndex = 5;
+
+  state.settings.gamepad.bindings.p2Giveup.gamepadId = p2?.id || "";
+  state.settings.gamepad.bindings.p2Giveup.gamepadIndex = p2?.index ?? null;
+  state.settings.gamepad.bindings.p2Giveup.buttonIndex = 7;
+
+  saveSettings();
+  toast("Joy-Conおすすめプリセットを適用しました");
+  render();
+}
+
+function clearGamepadBindings() {
+  state.settings.gamepad.mode = "custom";
+  state.settings.gamepad.bindings = deepClone(DEFAULT_BINDINGS);
+
+  for (const key of Object.keys(state.settings.gamepad.bindings)) {
+    state.settings.gamepad.bindings[key].gamepadId = "";
+    state.settings.gamepad.bindings[key].gamepadIndex = null;
+    state.settings.gamepad.bindings[key].buttonIndex = null;
+  }
+
+  state.gamepad.captureTarget = "";
+  clearGamepadHoldState();
+  saveSettings();
+  toast("コントローラー割り当てをクリアしました");
+  render();
+}
+
+function clearGamepadHoldState() {
+  state.gamepad.holdStart = {};
+}
+
 function gamepadStatusHtml() {
   const gamepads = readGamepads();
   updateGamepadAssignments(gamepads);
@@ -3224,26 +3657,18 @@ function gamepadStatusHtml() {
     `;
   }
 
-  const p1Index = state.gamepad.assignments.p1;
-  const p2Index = state.gamepad.assignments.p2;
-  const p1 = gamepads.find((gp) => gp.index === p1Index);
-  const p2 = gamepads.find((gp) => gp.index === p2Index);
-
   const items = gamepads.length
     ? gamepads.map((gp) => {
-        const role = gamepadRole(gp.index);
-        const roleText = role ? role.toUpperCase() : "未割当";
+        const roleText = gamepadRoleText(gp.index);
         return `<div class="mono-line">#${gp.index} ${escape(roleText)} / ${escape(gp.id || "Gamepad")}</div>`;
       }).join("")
-    : `<div class="muted">Joy-Conを接続してボタンを押すと認識されます。</div>`;
+    : `<div class="muted">コントローラーを接続してボタンを押すと認識されます。</div>`;
 
   return `
     <div class="gamepad-summary">
-      <div class="mono-line">P1: ${p1 ? `#${p1.index} ${escape(p1.id || "Gamepad")}` : "未接続"}</div>
-      <div class="mono-line">P2: ${p2 ? `#${p2.index} ${escape(p2.id || "Gamepad")}` : "未接続"}</div>
+      <div class="mono-line">入力モード: ${state.settings.gamepad.mode === "joycon" ? "Joy-Conプリセット" : "カスタム割り当て"}</div>
       <div class="mono-line">最新入力: ${escape(state.gamepad.lastInputText)}</div>
       ${items}
-      <div class="muted">標準想定: P1=L(button 4), ZL(button 6) / P2=R(button 5), ZR(button 7)</div>
     </div>
   `;
 }
@@ -3259,20 +3684,17 @@ function gamepadTestHtml() {
 
 function gamepadPlayerTestCard(role) {
   const name = role === "p1" ? state.settings.players.p1.name || "P1" : state.settings.players.p2.name || "P2";
-  const index = state.gamepad.assignments[role];
-  const gp = readGamepads().find((item) => item.index === index);
-  const primaryButtons = role === "p1" ? GAMEPAD_BUTTONS.p1Primary : GAMEPAD_BUTTONS.p2Primary;
-  const giveupButtons = role === "p1" ? GAMEPAD_BUTTONS.p1Giveup : GAMEPAD_BUTTONS.p2Giveup;
-  const primary = isGamepadButtonsPressed(index, primaryButtons);
-  const giveup = isGamepadButtonsPressed(index, giveupButtons);
-  const holdRatio = gamepadGiveupHoldRatio(index, role);
-  const primaryLabel = role === "p1" ? "L / ロール・スキップ" : "R / ロール・スキップ";
-  const giveupLabel = role === "p1" ? "ZL / ギブアップ長押し" : "ZR / ギブアップ長押し";
+  const primaryKey = role === "p1" ? "p1Primary" : "p2Primary";
+  const giveupKey = role === "p1" ? "p1Giveup" : "p2Giveup";
+  const primary = isBindingPressed(primaryKey);
+  const giveup = isBindingPressed(giveupKey);
+  const holdRatio = gamepadGiveupHoldRatio(giveupKey);
+  const primaryLabel = state.settings.gamepad.bindings[primaryKey]?.label || primaryKey;
+  const giveupLabel = state.settings.gamepad.bindings[giveupKey]?.label || giveupKey;
 
   return `
     <div class="card channel-card player-tone-${role === "p1" ? "1" : "2"} ${primary || giveup ? "is-active" : ""}">
       <h2>${escape(role.toUpperCase())} / ${escape(name)}</h2>
-      <p class="muted">${gp ? `#${gp.index} ${escape(gp.id || "Gamepad")}` : "未接続"}</p>
 
       <div class="gamepad-test-row ${primary ? "active" : ""}">
         <span>${escape(primaryLabel)}</span>
@@ -3287,37 +3709,54 @@ function gamepadPlayerTestCard(role) {
       <div class="bar out">
         <div class="bar-fill" style="width:${holdRatio}%"></div>
       </div>
-      <p class="muted">長押し進行: ${Math.round(holdRatio)}%</p>
+      <p class="muted">ギブアップ長押し進行: ${Math.round(holdRatio)}%</p>
     </div>
   `;
 }
 
-function isGamepadButtonsPressed(gamepadIndex, buttonIndices) {
-  if (gamepadIndex === null || gamepadIndex === undefined) {
+function isBindingPressed(bindingKey) {
+  const binding = state.settings.gamepad.bindings[bindingKey];
+
+  if (!binding) {
     return false;
   }
 
-  const buttons = state.gamepad.currentButtons[gamepadIndex] || [];
+  const gamepads = readGamepads();
 
-  return anyButtonPressed(buttons, buttonIndices);
+  for (const gp of gamepads) {
+    if (!bindingMatchesGamepad(binding, gp)) {
+      continue;
+    }
+
+    const buttons = state.gamepad.currentButtons[gp.index] || [];
+
+    if (buttons[Number(binding.buttonIndex)]) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
-function gamepadGiveupHoldRatio(gamepadIndex, role) {
-  if (gamepadIndex === null || gamepadIndex === undefined) {
-    return 0;
+function gamepadGiveupHoldRatio(bindingKey) {
+  for (const key of Object.keys(state.gamepad.holdStart)) {
+    if (!key.startsWith(`${bindingKey}:`)) {
+      continue;
+    }
+
+    const hold = state.gamepad.holdStart[key];
+
+    if (!hold || hold.fired) {
+      return 0;
+    }
+
+    const required = intClamp(state.settings.gamepad.giveupHoldMs, 500, 5000);
+    const elapsed = Date.now() - hold.startedAt;
+
+    return clamp((elapsed / required) * 100, 0, 100);
   }
 
-  const key = `${gamepadIndex}:${role}:giveup`;
-  const hold = state.gamepad.holdStart[key];
-
-  if (!hold) {
-    return 0;
-  }
-
-  const required = intClamp(state.settings.gamepad.giveupHoldMs, 500, 5000);
-  const elapsed = Date.now() - hold.startedAt;
-
-  return clamp((elapsed / required) * 100, 0, 100);
+  return 0;
 }
 
 function updateGamepadStatusDom() {
@@ -3333,6 +3772,14 @@ function updateGamepadTestDom() {
 
   if (el) {
     el.innerHTML = gamepadTestHtml();
+  }
+}
+
+function updateBindingDom() {
+  const el = document.getElementById("binding-list");
+
+  if (el) {
+    el.innerHTML = bindingListHtml();
   }
 }
 
@@ -3373,7 +3820,7 @@ function formatAudioValue(key, value) {
 }
 
 function updateAudioValueLabel(key, value) {
-  setText(`#audio-value-${CSS.escape(key)}`, formatAudioValue(key, value));
+  setText(`#audio-value-${cssEscape(key)}`, formatAudioValue(key, value));
 }
 
 function escape(value) {
@@ -3490,6 +3937,62 @@ function playSound(type) {
     gain.connect(state.audio.master);
     osc.start();
     osc.stop(ctx.currentTime + 0.2);
+  } catch {}
+}
+
+function playGiveupBeep(force) {
+  if (!force && !state.settings.gamepad.giveupBeep) {
+    return;
+  }
+
+  if (!state.settings.audio.soundEnabled) {
+    return;
+  }
+
+  try {
+    const ctx = getAudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "square";
+    osc.frequency.value = 760;
+
+    gain.gain.setValueAtTime(0.001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+
+    osc.connect(gain);
+    gain.connect(state.audio.master);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.09);
+  } catch {}
+}
+
+function playGiveupCompleteSound() {
+  if (!state.settings.audio.soundEnabled) {
+    return;
+  }
+
+  try {
+    const ctx = getAudioContext();
+
+    for (let i = 0; i < 3; i++) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "square";
+      osc.frequency.value = 220 - i * 45;
+
+      const t = ctx.currentTime + i * 0.08;
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.exponentialRampToValueAtTime(0.2, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+
+      osc.connect(gain);
+      gain.connect(state.audio.master);
+      osc.start(t);
+      osc.stop(t + 0.08);
+    }
   } catch {}
 }
 
