@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "20260605-15";
+const VERSION = "20260605-16";
 const PRODUCT_FAMILY = "SHOCKiG REARENA POCKET";
 const PRODUCT_NAME = "DICE CHARGE BATTLE";
 const ACCESS_CODE = "DCB-MFLABO-202606";
@@ -3422,22 +3422,36 @@ function bindingMatchesGamepad(binding, gp) {
     return false;
   }
 
-  if (state.settings.gamepad.mode === "joycon" && !binding.gamepadId && binding.gamepadIndex === null) {
+  if (state.settings.gamepad.mode === "joycon") {
     const role = binding.role;
-    const assignedIndex = state.gamepad.assignments[role];
 
-    return gp.index === assignedIndex;
+    if (role === "p1") {
+      return gp.index === state.gamepad.assignments.p1;
+    }
+
+    if (role === "p2") {
+      return gp.index === state.gamepad.assignments.p2;
+    }
+
+    return false;
   }
 
   if (binding.gamepadId && gp.id === binding.gamepadId) {
     return true;
   }
 
-  if (binding.gamepadIndex !== null && binding.gamepadIndex !== undefined && gp.index === Number(binding.gamepadIndex)) {
+  if (
+    binding.gamepadIndex !== null &&
+    binding.gamepadIndex !== undefined &&
+    gp.index === Number(binding.gamepadIndex)
+  ) {
     return true;
   }
 
-  if (!binding.gamepadId && (binding.gamepadIndex === null || binding.gamepadIndex === undefined)) {
+  if (
+    !binding.gamepadId &&
+    (binding.gamepadIndex === null || binding.gamepadIndex === undefined)
+  ) {
     return true;
   }
 
