@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Watch - TURN TEASE CARD BATTLE</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="watch-body">
+  <main class="app-shell watch-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Spectator View / 操作ボタンなし</p>
+        <h1>TURN TEASE CARD BATTLE <span>WATCH</span></h1>
+      </div>
+    </header>
+
+    <section class="panel join-panel">
+      <label>Room ID <input id="roomId" value="abc123" maxlength="48"></label>
+      <label>表示名 <input id="displayName" value="Watcher" maxlength="32"></label>
+      <button id="joinBtn" class="primary">Watch Join</button>
+      <p id="connectionStatus" class="muted">未接続</p>
+    </section>
+
+    <section class="watch-grid">
+      <article class="panel player-card giant" id="p1Status"></article>
+      <article class="panel player-card giant" id="p2Status"></article>
+    </section>
+
+    <section class="panel">
+      <div id="phaseLabel" class="phase giant-phase">WAITING</div>
+      <div id="phaseHelp" class="phase-help giant-help">P1/P2待機中</div>
+      <div id="lockStatus" class="lock-row"></div>
+    </section>
+
+    <section class="panel reveal-panel">
+      <h2>公開カード</h2>
+      <div id="revealArea" class="reveal-area big">まだ公開されていません</div>
+    </section>
+
+    <section class="panel continuous-panel">
+      <h2>継続状態（演出）</h2>
+      <div id="continuousArea" class="continuous calm">停止中</div>
+    </section>
+
+    <section class="panel">
+      <h2>結果ログ</h2>
+      <div id="logArea" class="log-area watch-log"></div>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/static/watch.js"></script>
+</body>
+</html>
