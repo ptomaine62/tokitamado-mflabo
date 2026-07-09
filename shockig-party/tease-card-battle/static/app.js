@@ -58,6 +58,17 @@ function phaseHelpFor(state) {
   return PHASE_HELP[state.phase] || state.phase;
 }
 
+
+function isFullGameState(state) {
+  return Boolean(
+    state &&
+    state.players &&
+    state.players.p1 &&
+    state.players.p2 &&
+    state.phase
+  );
+}
+
 function renderPlayer(p, activeRole) {
   if (!p) return "";
   const active = activeRole === p.player_id ? "active" : "";
@@ -74,7 +85,10 @@ function renderPlayer(p, activeRole) {
 }
 
 function renderState(state) {
-  if (!state || !state.players) return;
+  if (!isFullGameState(state)) {
+    console.warn("Ignored incomplete game state:", state);
+    return;
+  }
   latestState = state;
   updateHeartbeatStatus(true);
   $("phaseLabel").textContent = `Turn ${state.turn_no} / ${state.phase}`;
@@ -211,7 +225,8 @@ socket.on("connect", () => {
   joinRoom();
 });
 socket.on("server_hello", (payload) => {
-  $("connectionStatus").textContent = `接続済み: ${payload.sid}`;
+  $("connectionStatus").textContent = "接続済み";
+  console.log("server_hello", payload);
 });
 socket.on("role_assigned", (payload) => {
   myRole = payload.assigned_role;
@@ -232,4 +247,7 @@ socket.on("panic_stop_sync", (payload) => {
 });
 socket.on("give_up_sync", (payload) => appendLocalLog(`${payload.player_id} Give Up: ${payload.active}`));
 socket.on("start_game_failed", (payload) => appendLocalLog(payload.message));
-socket.on("error_message", (payload) => appendLocalLog(payload.message));
+socket.on("error_message", (payload) => {
+  appendLocalLog(payload.message);
+  console.error("error_message", payload);
+});
