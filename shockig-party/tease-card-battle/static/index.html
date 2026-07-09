@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TURN TEASE CARD BATTLE v0.3</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="hero">
+      <div><p class="eyebrow">Web対戦MVP / 実機出力なし</p><h1>TURN TEASE CARD BATTLE <span>v0.3</span></h1></div>
+      <a class="watch-link" href="/watch" target="_blank">観戦画面</a>
+    </header>
+
+    <section class="panel join-panel">
+      <label>Room ID <input id="roomId" value="abc123" maxlength="48"></label>
+      <label>表示名 <input id="displayName" value="P1" maxlength="32"></label>
+      <button id="joinBtn" class="primary">Join</button>
+      <div class="role-buttons">
+        <button data-role="p1">P1</button><button data-role="p2">P2</button><button data-role="spectator">Spectator</button>
+      </div>
+      <p id="connectionStatus" class="muted">未接続</p>
+    </section>
+
+    <section class="panel safety-panel">
+      <h2>Safety Lock</h2>
+      <label class="check"><input id="consentCheck" type="checkbox"> 同意確認: 参加者全員がWeb上の演出のみであることを理解しました</label>
+      <button id="localTestBtn">ローカルテスト完了</button>
+      <div id="safetyStatus" class="lock-badge">LOCK</div>
+    </section>
+
+    <section class="status-grid">
+      <article class="panel player-card" id="p1Status"></article>
+      <article class="panel center-card">
+        <div id="phaseLabel" class="phase">WAITING</div>
+        <div id="myRole" class="role-label">役割未選択</div>
+        <button id="readyBtn" class="primary">Ready</button>
+        <button id="resetBtn">Reset</button>
+      </article>
+      <article class="panel player-card" id="p2Status"></article>
+    </section>
+
+    <section class="panel reveal-panel"><h2>公開カード</h2><div id="revealArea" class="reveal-area">まだ公開されていません</div></section>
+    <section class="panel continuous-panel"><h2>継続状態（画面演出のみ）</h2><div id="continuousArea" class="continuous calm">停止中</div></section>
+    <section class="panel"><h2>手札</h2><div id="handArea" class="hand-area"></div></section>
+    <section class="panel"><h2>ログ</h2><div id="logArea" class="log-area"></div></section>
+  </main>
+  <div class="fixed-actions"><button id="giveUpBtn" class="giveup">Give Up</button><button id="panicBtn" class="panic">Panic / Stop</button></div>
+  <script src="/socket.io/socket.io.js"></script><script src="/static/safety.js"></script><script src="/static/app.js"></script>
+</body>
+</html>

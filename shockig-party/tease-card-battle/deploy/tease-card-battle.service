@@ -1,0 +1,17 @@
+[Unit]
+Description=TURN TEASE CARD BATTLE v0.3 Web MVP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/tokitamado-mflabo/shockig-party/tease-card-battle
+Environment=PORT=8091
+ExecStart=/opt/tokitamado-mflabo/shockig-party/tease-card-battle/.venv/bin/python /opt/tokitamado-mflabo/shockig-party/tease-card-battle/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
