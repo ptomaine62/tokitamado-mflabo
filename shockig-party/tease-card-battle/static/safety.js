@@ -2,6 +2,8 @@ const SAFETY = {
   consentAccepted: false,
   localTestPassed: false,
   panicActive: false,
+  localStopActive: false,
+  lastStopReason: "",
   maxOutputPercent: 30,
   heartbeatOk: true,
   pageVisible: true
@@ -26,16 +28,34 @@ function canAcceptExternalControl() {
     SAFETY.consentAccepted &&
     SAFETY.localTestPassed &&
     !SAFETY.panicActive &&
+    !SAFETY.localStopActive &&
     SAFETY.heartbeatOk &&
     SAFETY.pageVisible
   );
 }
 
 function forceLocalStop(reason) {
-  SAFETY.panicActive = true;
-  const event = new CustomEvent("safety-stop", { detail: { reason: reason || "unknown" } });
+  const stopReason = reason || "unknown";
+  const roomPanic = stopReason === "panic";
+  if (roomPanic) {
+    SAFETY.panicActive = true;
+  }
+  SAFETY.localStopActive = true;
+  SAFETY.lastStopReason = stopReason;
+  const event = new CustomEvent("safety-stop", { detail: { reason: stopReason, roomPanic } });
   window.dispatchEvent(event);
-  return { stopped: true, reason: reason || "unknown", outputPercent: 0 };
+  window.dispatchEvent(new CustomEvent("safety-change", { detail: { type: "local_stop", reason: stopReason, roomPanic } }));
+  return { stopped: true, reason: stopReason, roomPanic, outputPercent: 0 };
+}
+
+function clearLocalStop() {
+  if (!SAFETY.panicActive) {
+    SAFETY.localStopActive = false;
+    SAFETY.lastStopReason = "";
+    SAFETY.heartbeatOk = true;
+    lastHeartbeatAt = Date.now();
+    window.dispatchEvent(new CustomEvent("safety-change", { detail: { type: "clear_local_stop" } }));
+  }
 }
 
 function markConsentAccepted() {
@@ -45,6 +65,7 @@ function markConsentAccepted() {
 
 function markLocalTestPassed() {
   SAFETY.localTestPassed = true;
+  clearLocalStop();
   window.dispatchEvent(new CustomEvent("safety-change", { detail: { type: "local_test" } }));
 }
 
@@ -67,7 +88,11 @@ function startSafetyHeartbeatMonitor(timeoutMs = 15000) {
 
 document.addEventListener("visibilitychange", () => {
   SAFETY.pageVisible = !document.hidden;
-  if (document.hidden) forceLocalStop("visibilitychange");
+  if (document.hidden) {
+    forceLocalStop("visibilitychange");
+  } else {
+    window.dispatchEvent(new CustomEvent("safety-change", { detail: { type: "visible_again" } }));
+  }
 });
 
 window.addEventListener("load", () => startSafetyHeartbeatMonitor());
