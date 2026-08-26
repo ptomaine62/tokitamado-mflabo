@@ -15,7 +15,7 @@
     normalNorm:65,jackpotNormFloor:70,jackpotNormBet:1.2,
     hardnessBase:.08,hardnessSpan:.78,hardnessExponent:.72,jackpotHardnessProgress:.12,
     powerBase:10,powerSpan:78,powerExponent:.68,jackpotPowerProgress:8,
-    normalCycle:.50,zeroGap:.095,
+    normalCycle:.50,zeroGap:.095,payoutCountdown:3.0,
     // v0.11: non-SJP payouts get countable amount breaks without adding phantom payout.
     // <100 total: every 10 medals; >=100 total: every 100 medals.
     normalMilestoneSmall:10,normalMilestoneLarge:100,normalMilestoneThreshold:100,
@@ -36,7 +36,7 @@
     bet:5,credit:2000,diamonds:0,diamondBonus:20,holds:new Set(),busy:false,phase:'waiting',activeStage:'s1',lastResult:'—',lastWin:0,
     seed:0,roundRng:null,launchDelay:0,launchTimer:0,resolveTimer:0,transfer:null,payout:null,machineBank:0,totalBet:0,totalWin:0,
     lastNow:performance.now(),acc:0,audio:null,audioVolume:.28,messageTimer:0,
-    powerHistory:[],waveHistory:[],rotatingHistory:[],lastTelemetryAt:0,lastLiveSample:null,rotatingUnlocked:false,secretClicks:[]
+    powerHistory:[],waveHistory:[],rotatingHistory:[],lastTelemetryAt:0,lastLiveSample:null,rotatingUnlocked:false,secretClicks:[],headerMode:(window.matchMedia?.('(max-width:720px)')?.matches?'power':'title')
   };
   const physics=new KazaaanPhysicsEngine(window.KZ_DATA);
   let haptics;
@@ -57,6 +57,8 @@
   function soundWin(mult){tone(260+Math.min(500,mult*14),.10,.04,'square');tone(370+Math.min(400,mult*10),.12,.025,'square',.08)}
   function soundPayout(chunk,jp){tone((jp?150:180)+Math.min(560,chunk*4),.055,.032,'square')}
   function soundStartButton(){tone(520,.035,.028,'square');tone(760,.025,.018,'square',.035)}
+  function soundPayoutCountdown(n){tone(300+n*95,.07,.035,'square');if(n===1)tone(700,.05,.02,'square',.08)}
+  function soundPayoutGo(){tone(650,.06,.035,'square');tone(920,.08,.03,'square',.065)}
   function sampleLaunchDelay(rng){
     // Contemporary reports establish a random lag from effectively immediate
     // to about 2 s, but do not publish its probability table. Keep that verified
@@ -193,13 +195,24 @@
     const blockCount=jackpot?Math.max(1,Math.ceil(total/blockSize)):1;
     const milestoneSize=jackpot?0:normalMilestoneSize(total);
     const milestoneCount=jackpot?0:Math.max(1,Math.ceil(total/milestoneSize));
-    app.payout={total,remaining:total,jackpot,label,phase:'off',timer:.20,chunk:0,delivered:0,lastPreset:null,lastPower:0,
+    const countdown=Math.max(0,PAYOUT_RULES.payoutCountdown);
+    app.payout={total,remaining:total,jackpot,label,phase:countdown>0?'countdown':'off',timer:countdown>0?countdown:.20,countdownShown:Math.ceil(countdown),chunk:0,delivered:0,lastPreset:null,lastPower:0,
       blockSize,blockCount,blockIndex:1,blockDelivered:0,blockTarget:Math.min(blockSize,total),pulseInBlock:0,blockCompletePending:false,
       milestoneSize,milestoneCount,milestoneNext:milestoneSize,milestoneBreaks:0,milestoneCompletePending:false};
-    app.phase='payout';setMessage(jackpot?'SUPER JACKPOT ×100!':label,jackpot?`${total} HAPTIC PAYOUT / ${blockCount} BLOCKS`:`${total} HAPTIC PAYOUT / ${milestoneSize}枚ごとに区切り`,jackpot?1600:850);renderUI()
+    app.phase='payout';haptics.setOutput(0,null);
+    if(countdown>0){soundPayoutCountdown(Math.ceil(countdown));setMessage(String(Math.ceil(countdown)),`${total}枚 PAYOUT / 刺激開始まで`,0)}
+    else setMessage(jackpot?'SUPER JACKPOT ×100!':label,jackpot?`${total} HAPTIC PAYOUT / ${blockCount} BLOCKS`:`${total} HAPTIC PAYOUT / ${milestoneSize}枚ごとに区切り`,650);
+    renderUI()
   }
   function updatePayout(dt){
     const p=app.payout;if(!p)return;
+    if(p.phase==='countdown'){
+      p.timer-=dt;
+      const n=Math.max(0,Math.ceil(p.timer));
+      if(n>0&&n!==p.countdownShown){p.countdownShown=n;soundPayoutCountdown(n);setMessage(String(n),`${p.total}枚 PAYOUT / 刺激開始まで`,0);renderUI()}
+      if(p.timer<=0){p.countdownShown=0;p.phase='off';p.timer=.06;soundPayoutGo();setMessage('PAYOUT START!',`${p.total}枚 / REMAIN ${p.remaining}`,420);renderUI()}
+      return;
+    }
     p.timer-=dt;if(p.timer>0)return;
     const R=PAYOUT_RULES;
     if(p.phase==='on'){
@@ -289,7 +302,7 @@
     while(app.powerHistory.length&&now-app.powerHistory[0].t>keep)app.powerHistory.shift();
     while(app.waveHistory.length&&now-app.waveHistory[0].t>keep)app.waveHistory.shift();
     while(app.rotatingHistory.length&&now-app.rotatingHistory[0].t>keep)app.rotatingHistory.shift();
-    renderLiveSample(s);drawPowerHistory(now);drawWaveHistory(now);if(rotating.settings.enabled)drawRotatingHistory(now);
+    renderLiveSample(s);drawPowerHistory(now);drawWaveHistory(now);drawMobileHeader(now,s);if(rotating.settings.enabled)drawRotatingHistory(now);
   }
   function renderLiveSample(s){
     const active=s.active&&(s.effectiveA>0||s.effectiveB>0);
@@ -300,7 +313,7 @@
     if(app.payout){
       const p=app.payout,finale=p.jackpot&&p.blockIndex===p.blockCount;
       const prefix=p.jackpot?(finale?'FINALE':`BLOCK ${p.blockIndex}/${p.blockCount}`):'';
-      const idleLabel=p.phase==='blockGap'?'BLOCK BREAK / 区切り':p.phase==='off'?'PULSE GAP / 無出力区間':'IDLE';
+      const idleLabel=p.phase==='countdown'?`COUNTDOWN ${p.countdownShown||1}`:p.phase==='blockGap'?'BLOCK BREAK / 区切り':p.phase==='amountGap'?'COUNT BREAK / 区切り':p.phase==='off'?'PULSE GAP / 無出力区間':'IDLE';
       $('payoutLiveType').textContent=active?`${prefix?prefix+' · ':''}${s.label} / ${s.class}`:idleLabel;
       $('payoutLiveStrength').textContent=active?`${Math.round(s.power)}% CMD`:'0%';
       $('payoutLiveDetail').textContent=active?`A ${Math.round(s.effectiveA)}% / B ${Math.round(s.effectiveB)}% · ${s.hzA.toFixed(1)}/${s.hzB.toFixed(1)}Hz · WIDTH A${s.widthA}/B${s.widthB}`:`A 0% / B 0% · CHUNK ${p.chunk||0}`;
@@ -308,6 +321,35 @@
       $('payoutLiveType').textContent='IDLE';$('payoutLiveStrength').textContent='0%';$('payoutLiveDetail').textContent='A 0% / B 0% · OUTPUT ZERO';
     }
   }
+  function setHeaderMode(mode){
+    const allowed=['title','power','stim'];app.headerMode=allowed.includes(mode)?mode:'title';
+    const mobile=window.matchMedia('(max-width:720px)').matches;
+    $('headerTitleView').hidden=mobile&&app.headerMode!=='title';
+    $('headerPowerView').hidden=!mobile||app.headerMode!=='power';
+    $('headerStimView').hidden=!mobile||app.headerMode!=='stim';
+    document.querySelectorAll('[data-header-mode]').forEach(b=>b.classList.toggle('active',b.dataset.headerMode===app.headerMode));
+    if(app.lastLiveSample)drawMobileHeader(performance.now(),app.lastLiveSample);
+  }
+  function drawMiniPower(canvasId,now){
+    const {x,w,h}=fitCanvas(canvasId),windowMs=Math.min(2600,telemetryWindowMs()),hist=app.powerHistory;
+    x.clearRect(0,0,w,h);x.fillStyle='#090705';x.fillRect(0,0,w,h);x.strokeStyle='#2f2418';x.lineWidth=1;
+    x.beginPath();x.moveTo(0,h*.5);x.lineTo(w,h*.5);x.stroke();
+    const draw=(key,color)=>{x.strokeStyle=color;x.lineWidth=1.35;x.beginPath();let started=false;for(const q of hist){const age=now-q.t;if(age<0||age>windowMs)continue;const px=w-(age/windowMs)*w,py=h-2-clamp(q[key],0,100)/100*(h-4);if(!started){x.moveTo(px,py);started=true}else x.lineTo(px,py)}if(started)x.stroke()};
+    draw('a','#ffd45f');draw('b','#67dcff');
+  }
+  function drawMiniStim(canvasId,now,s){
+    const {x,w,h}=fitCanvas(canvasId);x.clearRect(0,0,w,h);x.fillStyle='#080604';x.fillRect(0,0,w,h);
+    const channel=(cy,power,freq,width,color,offset)=>{x.strokeStyle=color;x.lineWidth=1.25;x.beginPath();const n=Math.max(120,Math.floor(w));for(let i=0;i<n;i++){const px=i/(n-1)*w,time=i/Math.max(1,w)*.85+now/1000,phase=(time*Math.max(.1,freq)+offset*.37)%1,pulse=phase<clamp(width,0,100)/100?1:-.12,amp=(h*.22)*(clamp(power,0,100)/100),py=cy-pulse*amp;if(i===0)x.moveTo(px,py);else x.lineTo(px,py)}x.stroke();x.strokeStyle='#2b2117';x.lineWidth=.8;x.beginPath();x.moveTo(0,cy);x.lineTo(w,cy);x.stroke()};
+    channel(h*.30,s.effectiveA||0,s.hzA||1,s.widthA||0,'#ffd45f',0);channel(h*.72,s.effectiveB||0,s.hzB||1,s.widthB||0,'#67dcff',1);
+  }
+  function drawMobileHeader(now,s){
+    if(!window.matchMedia('(max-width:720px)').matches)return;
+    $('mobilePowerText').textContent=`A ${Math.round(s.effectiveA||0)}% / B ${Math.round(s.effectiveB||0)}%`;
+    $('mobileStimText').textContent=s.active?`${s.label||'PRESET'} · A${Math.round(s.effectiveA||0)} B${Math.round(s.effectiveB||0)}`:'IDLE / OUTPUT ZERO';
+    if(app.headerMode==='power'&&!$('headerPowerView').hidden)drawMiniPower('mobilePowerCanvas',now);
+    if(app.headerMode==='stim'&&!$('headerStimView').hidden)drawMiniStim('mobileStimCanvas',now,s);
+  }
+
   function drawPowerHistory(now){
     const {x,w,h}=fitCanvas('powerHistoryCanvas'),windowMs=telemetryWindowMs(),hist=app.powerHistory;
     x.clearRect(0,0,w,h);x.fillStyle='#090705';x.fillRect(0,0,w,h);
@@ -361,7 +403,7 @@
 
   function renderDiamonds(){const r=$('diamondRow');r.replaceChildren();for(let i=0;i<8;i++){const d=document.createElement('i');d.className='diamond '+(i<app.diamonds?'on':'');r.appendChild(d)}$('diamondBonusValue').textContent=app.diamondBonus}
   function renderUI(){
-    $('creditDisplay').textContent=String(Math.floor(app.credit)).padStart(4,'0');$('betDisplay').textContent=String(app.bet).padStart(2,'0');$('lastResult').textContent=app.lastResult;$('lastWin').textContent=app.lastWin;$('holdCount').textContent=`${app.holds.size} / 4`;$('payoutRemain').textContent=app.payout?.remaining||0;renderDiamonds();
+    $('creditDisplay').textContent=String(Math.floor(app.credit)).padStart(4,'0');$('betDisplay').textContent=String(app.bet).padStart(2,'0');$('lastResult').textContent=app.lastResult;$('lastWin').textContent=app.lastWin;$('holdCount').textContent=`${app.holds.size} / 4`;$('payoutRemain').textContent=app.payout?`${app.payout.remaining} / ${app.payout.total}`:'0';renderDiamonds();
     const locked=app.busy||haptics.panic||haptics.test.active;$('insertMedals').disabled=app.busy;$('testA').disabled=app.busy||haptics.panic;$('testB').disabled=app.busy||haptics.panic;$('betMinus').disabled=locked;$('betPlus').disabled=locked;document.querySelectorAll('[data-bet]').forEach(b=>b.disabled=locked);$('launchButton').disabled=locked||app.credit<app.bet;
     $('activeStage').textContent=STAGES[app.activeStage]?.name||'—';$('stageState').textContent=app.phase.toUpperCase();
     const m=physics.motors[app.activeStage]||physics.motors.s1;$('diagMotor').textContent=`${m.direction>0?'CW':'CCW'} M${m.mode+1} / ${physics.period(app.activeStage).toFixed(1)}s`;$('diagSwings').textContent=physics.trial?.swings||0;
@@ -369,21 +411,23 @@
     if(app.payout){
       const p=app.payout,pct=100*p.delivered/p.total,finale=p.jackpot&&p.blockIndex===p.blockCount;
       $('payoutMeter').style.width=pct+'%';$('payoutChunk').textContent='+'+(p.chunk||0);
-      $('payoutClass').textContent=p.jackpot?(finale?'SJP FINALE':'SJP PAYOUT'):p.label;$('payoutClass').className='chip '+(p.jackpot?'hot':'good');
-      $('payoutCounter').textContent=`${p.delivered} / ${p.total}`;$('payoutProgressText').textContent=pct.toFixed(0)+'%';
+      $('payoutClass').textContent=p.phase==='countdown'?(p.jackpot?'SJP READY':'PAYOUT READY'):p.jackpot?(finale?'SJP FINALE':'SJP PAYOUT'):p.label;$('payoutClass').className='chip '+(p.jackpot?'hot':'good');
+      $('payoutCounter').textContent=`${p.remaining} / ${p.total}`;$('payoutProgressText').textContent=`DELIVERED ${p.delivered} · ${pct.toFixed(0)}%`;
+      const hud=$('payoutHud');hud.hidden=false;hud.classList.toggle('countdown',p.phase==='countdown');hud.classList.toggle('finale',finale&&p.phase!=='countdown');$('payoutHudLabel').textContent=p.jackpot?'SJP PAYOUT REMAIN':'PAYOUT REMAIN';$('payoutHudRemain').textContent=p.remaining;$('payoutHudTotal').textContent=p.total;
+      $('payoutHudPhase').textContent=p.phase==='countdown'?`START IN ${p.countdownShown||1}`:p.phase==='amountGap'?`${p.milestoneSize}枚 BREAK`:p.phase==='blockGap'?`BLOCK BREAK ${p.blockIndex}/${p.blockCount}`:finale?`FINALE · +${p.chunk||0}`:`+${p.chunk||0} / ${p.jackpot?`BLOCK ${p.blockIndex}/${p.blockCount}`:`COUNT ${p.milestoneSize}`}`;
       $('payoutBlockRow').hidden=false;
       if(p.jackpot){
         $('payoutBlockRow').classList.toggle('finale',finale);
-        $('payoutBlock').textContent=finale?`FINALE ${p.blockIndex}/${p.blockCount}`:`SJP BLOCK ${p.blockIndex} / ${p.blockCount}`;
-        $('payoutBlockAmount').textContent=`${p.blockDelivered} / ${p.blockTarget} 枚`;
+        $('payoutBlock').textContent=p.phase==='countdown'?'SJP COUNTDOWN':finale?`FINALE ${p.blockIndex}/${p.blockCount}`:`SJP BLOCK ${p.blockIndex} / ${p.blockCount}`;
+        $('payoutBlockAmount').textContent=p.phase==='countdown'?`START IN ${p.countdownShown||1} · TOTAL ${p.total} 枚`:`${p.blockDelivered} / ${p.blockTarget} 枚`;
       }else{
         $('payoutBlockRow').classList.remove('finale');
-        $('payoutBlock').textContent=`${p.milestoneSize}枚 COUNT`;
+        $('payoutBlock').textContent=p.phase==='countdown'?'START COUNTDOWN':`${p.milestoneSize}枚 COUNT`;
         const next=Math.min(p.total,p.milestoneNext);
-        $('payoutBlockAmount').textContent=p.phase==='amountGap'?`BREAK ${p.delivered} / ${p.total} 枚`:`NEXT ${next} / ${p.total} 枚`;
+        $('payoutBlockAmount').textContent=p.phase==='countdown'?`START IN ${p.countdownShown||1} · TOTAL ${p.total} 枚`:p.phase==='amountGap'?`BREAK ${p.delivered} / ${p.total} 枚`:`NEXT ${next} / ${p.total} 枚`;
       }
     }else{
-      $('payoutMeter').style.width='0%';$('payoutChunk').textContent='+0';$('payoutClass').textContent='IDLE';$('payoutClass').className='chip';$('payoutCounter').textContent='0 / 0';$('payoutProgressText').textContent='0%';$('payoutBlockRow').hidden=true;$('payoutBlockRow').classList.remove('finale');$('payoutBlock').textContent='—';$('payoutBlockAmount').textContent='—';
+      $('payoutMeter').style.width='0%';$('payoutChunk').textContent='+0';$('payoutClass').textContent='IDLE';$('payoutClass').className='chip';$('payoutCounter').textContent='0 / 0';$('payoutProgressText').textContent='DELIVERED 0';$('payoutHud').hidden=true;$('payoutHud').classList.remove('countdown','finale');$('payoutBlockRow').hidden=true;$('payoutBlockRow').classList.remove('finale');$('payoutBlock').textContent='—';$('payoutBlockAmount').textContent='—';
     }
   }
 
@@ -430,6 +474,8 @@
     $('rotatingEnabled').onchange=e=>{rotating.setEnabled(e.target.checked);app.rotatingHistory=[];renderRotatingPanel()};
     $('rotatingConnectMode').onchange=e=>rotating.setConnectionMode(e.target.value);$('rotatingConnect').onclick=()=>rotating.connect($('rotatingConnectMode').value);$('rotatingDisconnect').onclick=()=>rotating.disconnect();
     const rotatingLimits=()=>{let mn=+$('rotatingMin').value,mx=+$('rotatingMax').value;if(mn>mx){if(document.activeElement===$('rotatingMin'))mx=mn;else mn=mx;$('rotatingMin').value=mn;$('rotatingMax').value=mx}rotating.setLimits(mn,mx);renderRotatingPanel()};$('rotatingMin').oninput=rotatingLimits;$('rotatingMax').oninput=rotatingLimits;
+    document.querySelectorAll('[data-header-mode]').forEach(b=>b.addEventListener('click',()=>setHeaderMode(b.dataset.headerMode)));setHeaderMode(app.headerMode);
+    window.matchMedia('(max-width:720px)').addEventListener?.('change',()=>setHeaderMode(app.headerMode));
     $('secretTitle').addEventListener('click',()=>{const now=performance.now();app.secretClicks=app.secretClicks.filter(t=>now-t<3200);app.secretClicks.push(now);if(app.secretClicks.length>=5){app.rotatingUnlocked=true;app.secretClicks=[];save();renderRotatingPanel();setMessage('HIDDEN OUTPUT UNLOCKED','ROTIATING DEVICE',1100)}});
 window.addEventListener('keydown',async e=>{if(e.key==='Escape'){e.preventDefault();if(!haptics.panic){await haptics.emergency();await rotating.zero();setMessage('EMERGENCY STOP','E-STIM DEVICE OUTPUT ZERO');$('panicButton').textContent='RESET STOP';renderUI()}}});window.addEventListener('blur',()=>haptics.endTest());document.addEventListener('visibilitychange',()=>{if(document.hidden){haptics.endTest();rotating.zero()}});window.addEventListener('pagehide',()=>{haptics.sendZeroRepeat();rotating.zero()});
     new ResizeObserver(resizeCanvas).observe($('machineCanvas').parentElement);

@@ -20,9 +20,11 @@
     mapping(sample){
       if(!this.settings.enabled||!sample?.active||sample.power<=0||sample.test)return {source:0,target:0};
       const commandPower=clamp(sample.power,0,100),waveLevel=clamp(sample.waveLevel,0,100);
-      // Deliberately simple/strong mapping requested for the hidden device:
-      // payout command power + relative preset level, saturating easily at 100.
-      const source=clamp(commandPower+waveLevel,0,100);
+      // Keep the requested POWER + waveform-level relationship, but compress the
+      // sum so ordinary payouts do not pin the rotating device at MAX. 190/200
+      // combined points reaches MAX; lower values retain a smooth response.
+      const combined=clamp(commandPower+waveLevel,0,200);
+      const source=combined<=0?0:clamp(100*Math.pow(combined/190,.90),0,100);
       const target=source<=0?0:this.settings.min+(this.settings.max-this.settings.min)*(source/100);
       return {source,target:clamp(target,0,this.settings.max),commandPower,waveLevel};
     }

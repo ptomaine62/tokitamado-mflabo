@@ -3,14 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>541 VOLCAAANO!!! — v0.13</title>
+  <title>541 VOLCAAANO!!! — v0.15</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
-    <div>
+    <div id="headerTitleView" class="header-view header-title-view">
       <div class="eyebrow">PHYSICAL MEDAL / HAPTIC PAYOUT</div>
-      <h1 id="secretTitle" title="541 VOLCAAANO!!!">541 VOLCAAANO!!! <small>v0.13</small></h1>
+      <h1 id="secretTitle" title="541 VOLCAAANO!!!">541 VOLCAAANO!!! <small>v0.15</small></h1>
+    </div>
+    <div id="headerPowerView" class="header-view header-monitor-view" hidden>
+      <div class="header-monitor-label"><strong>POWER</strong><span id="mobilePowerText">A 0% / B 0%</span></div>
+      <canvas id="mobilePowerCanvas" aria-label="Mobile A/B power monitor"></canvas>
+    </div>
+    <div id="headerStimView" class="header-view header-monitor-view" hidden>
+      <div class="header-monitor-label"><strong>STIM</strong><span id="mobileStimText">IDLE</span></div>
+      <canvas id="mobileStimCanvas" aria-label="Mobile live stimulus waveform"></canvas>
+    </div>
+    <div class="mobile-header-tabs" aria-label="スマホヘッダー表示切替">
+      <button type="button" data-header-mode="title">TITLE</button>
+      <button type="button" data-header-mode="power">PWR</button>
+      <button type="button" data-header-mode="stim">STIM</button>
     </div>
     <div class="topchips">
       <span id="profileChip" class="chip">2010 / EARLY</span>
@@ -30,6 +43,11 @@
         <div class="stage-readout">
           <span id="activeStage">1ST STAGE</span>
           <strong id="stageState">WAITING</strong>
+        </div>
+        <div id="payoutHud" class="payout-hud" hidden>
+          <span id="payoutHudLabel">PAYOUT REMAIN</span>
+          <strong><b id="payoutHudRemain">0</b><small> / <span id="payoutHudTotal">0</span> 枚</small></strong>
+          <em id="payoutHudPhase">READY</em>
         </div>
       </div>
 
@@ -74,7 +92,7 @@
         <div><span>LAST RESULT</span><strong id="lastResult">—</strong></div>
         <div><span>WIN</span><strong id="lastWin">0</strong></div>
         <div><span>HOLD</span><strong id="holdCount">0 / 4</strong></div>
-        <div><span>HAPTIC REMAIN</span><strong id="payoutRemain">0</strong></div>
+        <div><span>PAYOUT REMAIN</span><strong id="payoutRemain">0</strong></div>
       </section>
     </section>
 
@@ -141,7 +159,7 @@
           <label><span>MAX <b id="rotatingMaxOut">100%</b></span><input id="rotatingMax" type="range" min="0" max="100" value="100"></label>
         </div>
         <div id="rotatingLive" class="rotating-live">
-          <div><span>SOURCE</span><strong id="rotatingSource">0%</strong><small>POWER + 波形LEVEL</small></div>
+          <div><span>SOURCE</span><strong id="rotatingSource">0%</strong><small>POWER + 波形LEVEL / SOFT CURVE</small></div>
           <div><span>TARGET</span><strong id="rotatingTarget">0%</strong><small id="rotatingDriveMode">OFF</small></div>
           <div><span>ACTUAL</span><strong id="rotatingActual">0%</strong><small>送信出力</small></div>
         </div>
@@ -172,7 +190,7 @@
         <summary>HAPTIC PAYOUT / 刺激払い出し</summary>
         <div class="detail-body">
           <div class="payout-head"><span id="payoutClass" class="chip">IDLE</span><strong id="payoutChunk">+0</strong></div>
-          <div class="payout-counter"><span>払い戻し</span><strong id="payoutCounter">0 / 0</strong><small id="payoutProgressText">0%</small></div>
+          <div class="payout-counter"><span>払い戻し残り</span><strong id="payoutCounter">0 / 0</strong><small id="payoutProgressText">DELIVERED 0</small></div>
           <div id="payoutBlockRow" class="payout-block" hidden><span>SJP BLOCK</span><strong id="payoutBlock">—</strong><small id="payoutBlockAmount">—</small></div>
           <div class="meter payout"><i id="payoutMeter"></i></div>
           <div class="payout-live">
