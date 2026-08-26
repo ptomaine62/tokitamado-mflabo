@@ -1,0 +1,128 @@
+541 VOLCAAANO!!! v0.13 — VERIFICATION
+======================================
+Date: 2026-08-26 JST
+
+STATIC / SYNTAX
+---------------
+HTML IDs: 89 / duplicates: 0
+Literal $('id') refs: 85 / missing: 0
+Missing IDs: []
+DG-LAB runtime hits: 0
+Root runtime files: index.html, style.css
+CSS braces: 179 179 balanced= True
+
+JavaScript syntax:
+PASS — app.js
+PASS — haptics.js
+PASS — kazaaan-data.js
+PASS — kazaaan-physics.js
+PASS — rotating.js
+
+V0.13 NEW FEATURE / PHYSICS TEST
+--------------------------------
+PASS — Solid surface uses visible-radius radial support
+PASS — Solid collision uses predicted next radial position
+PASS — No new UP-specific force branch
+PASS — UP remains width-only model in data
+PASS — s1 physics resolves 700 samples / {"OUT":489,"UP":211}
+PASS — s1 solid contacts do not chatter / max streak=2
+PASS — s2 physics resolves 700 samples / {"OUT":259,"WIN":206,"Q":150,"UP":85}
+PASS — s2 solid contacts do not chatter / max streak=1
+PASS — s3 physics resolves 700 samples / {"JPC":114,"HOLD":468,"Q":118}
+PASS — s3 solid contacts do not chatter / max streak=1
+PASS — 1ST still produces both UP and OUT / {"OUT":489,"UP":211}
+PASS — 2ND still produces UP/OUT/payout types / {"OUT":259,"WIN":206,"Q":150,"UP":85}
+PASS — HOLD TEST A 50% envelope maps within A LIMIT / A=15 B=0
+PASS — HOLD TEST A reaches configured A LIMIT only / A=30
+PASS — E-STIM proportional LIMIT mapping retained / A=24 B=48
+PASS — E-STIM connection has AUTO and MANUAL chooser paths
+PASS — E-STIM explicit disconnect is present
+PASS — ROTIATING source is POWER + wave LEVEL and saturates easily / source=100 target=100
+PASS — ROTIATING MIN/MAX mapping gives nonzero floor / target=12.60
+PASS — ROTIATING <=25% enters intermittent mode / actual=25 duty=0.8
+PASS — ROTIATING >25% is continuous
+PASS — ROTIATING packet format is A0 03 power 00 00 00 AA
+PASS — ROTIATING uses FFA0/FFA1 BLE UUIDs
+PASS — ROTIATING send cadence is ~20Hz
+PASS — Hidden panel exists and graph is conditional
+PASS — Factory reset UI exists
+PASS — Runtime UI has no DG-LAB branding
+PASS — Generic preset stimulus UI is present
+
+V0.13 RESULT: PASS — 28 passed / 0 failed
+
+
+PAYOUT REGRESSION TEST
+----------------------
+PASS — Game title renamed to 541 VOLCAAANO!!!
+PASS — Visible output label is E-STIM DEVICE
+PASS — Runtime status label uses generic E-STIM DEVICE
+PASS — Normal payout has 10/100 medal milestone model
+PASS — Normal payout cannot jump across milestone
+PASS — Normal amount gap is explicit zero-output phase
+PASS — No phantom normal payout is added
+PASS — SJP ON duration extended
+PASS — SJP block breaks retained
+PASS — SJP near-continuous within-block ZERO retained
+PASS — Normal 30 payout breaks every 10 / 10,20
+PASS — Normal 30 conserves exact payout / 30/30
+PASS — Normal 60 payout breaks every 10 / 10,20,30,40,50
+PASS — Normal 60 conserves exact payout / 60/60
+PASS — Normal 90 payout breaks every 10 / 10,20,30,40,50,60,70,80
+PASS — Normal 90 conserves exact payout / 90/90
+PASS — Normal 120 payout breaks every 100 / 100
+PASS — Normal 120 conserves exact payout / 120/120
+PASS — Normal 360 payout breaks every 100 / 100,200,300
+PASS — Normal 360 conserves exact payout / 360/360
+PASS — Normal 1188 payout breaks every 100 / 100,200,300,400,500,600,700,800,900,1000,1100
+PASS — Normal 1188 conserves exact payout / 1188/1188
+PASS — BET 5 SJP conserves exact payout / 500/500
+PASS — BET 5 SJP duration exceeds same-amount normal baseline / SJP 17.3s > normal 8.1s
+PASS — BET 10 SJP conserves exact payout / 1000/1000
+PASS — BET 10 SJP duration exceeds same-amount normal baseline / SJP 34.7s > normal 11.2s
+PASS — BET 30 SJP conserves exact payout / 3000/3000
+PASS — BET 30 SJP duration exceeds same-amount normal baseline / SJP 92.4s > normal 33.7s
+PASS — BET 50 SJP conserves exact payout / 5000/5000
+PASS — BET 50 SJP duration exceeds same-amount normal baseline / SJP 116.7s > normal 56.2s
+PASS — BET 99 SJP conserves exact payout / 9900/9900
+PASS — BET 99 SJP duration exceeds same-amount normal baseline / SJP 121.8s > normal 111.4s
+PASS — BET99 SJP remains block-countable / 600枚 × 17 blocks
+PASS — BET99 SJP is intentionally long-form / 164 chunks / 121.8s
+
+V0.11 PAYOUT RESULT: PASS — 34 passed / 0 failed
+
+
+E-STIM HOLD TEST PACKET CHECK
+-----------------------------
+PASS — A LIMIT 30%, test envelope 50% -> A physical 15% -> B0 A raw 30/200; B raw 0.
+PASS — B0 remains 20 bytes.
+
+BROWSER RENDER
+--------------
+NOT COMPLETED — container Chromium hangs in DBus/zygote startup; static DOM and JS checks were used instead.
+
+REAL HARDWARE
+-------------
+NOT EXECUTED — physical BLE hardware is unavailable in the artifact environment. Protocol construction and connection flows were verified against prior application implementations and runtime unit tests.
+
+
+V0.12 vs V0.13 1ST PHYSICS COMPARISON
+--------------------------------------
+/mnt/data/541_VOLCAAANO_v0_12 {
+  up: 418,
+  out: 982,
+  un: 0,
+  share: 0.2985714285714286,
+  penetr: 0,
+  checks: 0,
+  minDelta: 999
+}
+/mnt/data/541_VOLCAAANO_v0_13 {
+  up: 419,
+  out: 981,
+  un: 0,
+  share: 0.29928571428571427,
+  penetr: 0,
+  checks: 135419,
+  minDelta: 0
+}

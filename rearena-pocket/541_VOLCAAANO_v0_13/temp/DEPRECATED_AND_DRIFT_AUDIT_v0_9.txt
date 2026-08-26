@@ -1,0 +1,12 @@
+HAPTIC KAZAAAN v0.9 — DEPRECATED / DRIFT AUDIT
+===============================================
+
+Runtime deprecated-symbol search:
+
+Expected result above: no matches.
+
+UP physics branch search:
+327:        if(['UP','JPC','SJPC','SJP'].includes(cg.slot.type)){fill='#472306';stroke='#ffd33c';color='#fff0a1'}
+
+Interpretation: the remaining UP occurrence in kazaaan-physics.js is visual coloring only.
+UP entry geometry lives in kazaaan-data.js as width=.84. No UP-specific force/bounce branch exists.

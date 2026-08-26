@@ -1,0 +1,137 @@
+HAPTIC KAZAAAN v0.9 — VERIFICATION
+==================================
+Date: 2026-08-26 JST
+
+SCOPE
+-----
+- KAZAAAN rule / physics regression suite
+- UP entry special-branch audit
+- UP capture -> transfer continuity audit
+- desktop layout static audit
+- realtime A/B POWER + FREQ/WIDTH telemetry audit
+- HAPTIC PAYOUT formula restoration audit
+- COYOTE V3 packet / LIMIT runtime audit
+
+BASE REGRESSION
+---------------
+PASS — BET is clamped to 5..99
+PASS — 1ST has 18 pockets
+PASS — 1ST order UP OUT OUT x6
+PASS — 2ND exact 15-pocket order
+PASS — 3RD exact 6-pocket order
+PASS — 3RD HOLD indices are 4 payout holes
+PASS — JPC exact lower ceiling order
+PASS — SJPC exact upper ceiling order
+PASS — Question ranges
+PASS — 1ST physics always resolves in 30s / unresolved=0
+PASS — 1ST physics produces both UP and OUT / UP=150 OUT=350
+PASS — 1ST ball visibly oscillates before capture / avg swings=7.45
+PASS — Dark non-pocket carrier space produces physical bounce / avg dark bounces=2.82
+PASS — 2ND fixed-gate physics resolves / unresolved=0
+PASS — 2ND physics can produce UP, OUT and payout pockets / {"OUT":214,"×1":49,"×?":122,"×2":79,"UP":97,"×3":39}
+PASS — 3RD fixed-gate physics resolves / unresolved=0
+PASS — 3RD open physics can reach JPC, HOLD payouts and ×? / {"JPC":96,"×6":195,"×3":206,"×?":103}
+PASS — 4-HOLD blocks all ×3/×6 capture / {"JPC":172,"×?":178}
+PASS — 4-HOLD leaves JPC and ×? as possible outcomes / {"JPC":172,"×?":178}
+PASS — COYOTE B0 exactly 20 bytes / len=20
+PASS — COYOTE absolute strength mode in B0 / mode=0xf
+PASS — A/B LIMIT clamps 0-100% to 0-200 raw / A=60 B=90
+PASS — COYOTE zero B0 exactly 20 bytes and zero strengths
+PASS — All app-critical DOM IDs exist
+PASS — All split JS files are referenced
+PASS — Pockets revolve without visual self-rotation
+PASS — Captured ball remains visible and follows captured pocket at preserved local offset
+PASS — Pocket labels use one screen-space font size
+PASS — Capture dwell is 0.90 seconds before result handling
+PASS — 1ST-3RD use one fixed entrance gate geometry
+PASS — Rendered rail gap uses exact physics gate boundaries
+PASS — UP transfer continuously re-enters target stage
+PASS — 1ST-3RD entry positions are distinct from capture gate
+PASS — COYOTE V3 service/write/notify UUIDs present
+PASS — Fallback waveform ranking is ascending
+PASS — Waveform ranking spans GENTLE to SEVERE
+PASS — ×? model stays inside documented 2ND range
+PASS — COYOTE BF exactly 7 bytes / BF=191,60,90,128,128,128,128
+PASS — COYOTE BF carries A/B 0-200 soft limits / A=60 B=90
+PASS — Player controls only BET + BALL SHOOT in game path
+PASS — Launch delay keeps verified 0..2s range with near-immediate bias
+PASS — All five stage cavities use one shared contour
+PASS — Visual cavities and physics share cavityGeometry
+PASS — Carrier tooth faces are drawn on exact cavity boundaries
+PASS — Optional hitbox overlay redraws cavity and gate geometry
+PASS — UP width is fixed geometry, not speed-dependent mystery shrink
+PASS — Finite ball radius is derived from rendered ball size
+PASS — Visible cavity walls and ball-centre contact envelope share one geometry
+PASS — Carrier opening is evaluated under the ball, not at gate centre
+PASS — App diagnostics no longer call removed gate-centre helper
+PASS — Entered cell is latched before final result
+PASS — Captured local offset is exact, not clamped toward centre / avg=0.044 max=0.108
+PASS — No deprecated lip theta-teleport helper remains
+PASS — No elapsed-time force-to-result helpers remain
+PASS — No hidden second gate width remains
+PASS — Ball radius is not implemented as an arbitrary invisible constant
+PASS — Numerical carrier chatter is limited to one impact episode / max streak=1
+PASS — Average 1ST carrier-top impacts remain moderate / avg=2.82
+PASS — No arbitrary tangential side-kick remains
+PASS — Gate-edge ball cannot fall through a tooth because gate centre is open / gateHalf=0.1228 cavityHalf=0.1114 local=0.1159
+PASS — Every seated ball centre is inside radius-aware cavity walls / tested=500 outside=0
+PASS — Carrier top does not cause high-speed instant direction reversal / contacts=837 suspicious=0
+PASS — Fixed 120Hz physics step is present
+PASS — SJP uses ×100 stage data
+
+RESULT: PASS — 64 passed / 0 failed
+
+V0.9 ADDITIONAL AUDIT
+---------------------
+PASS — UP physics has no UP-specific force branch
+PASS — UP aperture is geometry-only width .84
+PASS — Transfer uses current followed captured angle
+PASS — Transfer no longer starts unconditionally from fixed gate
+PASS — Desktop machine column is capped near half viewport
+PASS — Desktop overall layout is capped
+PASS — Continuous telemetry samples at 25 ms cadence
+PASS — Power history stores LIMIT-applied A/B
+PASS — Wave history stores WIDTH/Frequency/Power A/B
+PASS — Telemetry DOM exists: powerHistoryCanvas
+PASS — Telemetry DOM exists: waveformCanvas
+PASS — Telemetry DOM exists: scopeWindow
+PASS — Telemetry DOM exists: stimulusNow
+PASS — Telemetry DOM exists: stimulusTech
+PASS — Telemetry DOM exists: payoutLiveType
+PASS — Telemetry DOM exists: payoutLiveStrength
+PASS — Telemetry DOM exists: payoutLiveDetail
+PASS — Payout normal chunk baseline restored
+PASS — Payout JP chunk baseline restored
+PASS — Power mapping baseline restored
+PASS — Hardness mapping baseline restored
+PASS — Explicit ~95ms zero gap restored
+PASS — Waveform ranking baseline weights restored
+PASS — Anti-repeat last-3 penalty restored
+PASS — Runtime effective Power respects A/B LIMIT / A=30 B=60
+PASS — Runtime 25ms subslot advances under constant Power / 0->1
+PASS — Runtime 100ms raw frame advances under constant Power / 0->1
+PASS — Runtime B0 remains 20 bytes with LIMIT-applied strength / len=20 A=60 B=120
+PASS — Captured followed angle changes while motor turns during dwell / delta=0.2992 rad
+PASS — Frozen trial.theta is not used as current followed position
+
+ADDITIONAL RESULT: PASS — 30 passed / 0 failed
+
+BROWSER VISUAL NOTE
+-------------------
+A Chromium headless screenshot was attempted at 1920x1080 in this artifact environment,
+but Chromium did not complete navigation before the container timeout and emitted DBus/headless
+environment errors. Therefore this verification does NOT claim a successful pixel-level browser
+render test. CSS geometry and DOM contracts were statically checked; the application JavaScript
+and physics/runtime unit tests passed.
+
+REAL DEVICE NOTE
+----------------
+A physical DG-LAB COYOTE V3 is not present in this environment. B0/BF construction, A/B LIMIT
+clamping, frame sampling and zero-output paths are validated in code/runtime tests; tactile output
+must still be confirmed on the user's Windows/Chrome or Edge + physical device environment.
+
+OVERALL
+-------
+BASE: 64 / 64 PASS
+V0.9 ADDITIONAL: 30 / 30 PASS
+TOTAL: 94 / 94 PASS

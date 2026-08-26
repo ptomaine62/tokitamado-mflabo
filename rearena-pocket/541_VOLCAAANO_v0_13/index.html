@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>541 VOLCAAANO!!! — v0.13</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">PHYSICAL MEDAL / HAPTIC PAYOUT</div>
+      <h1 id="secretTitle" title="541 VOLCAAANO!!!">541 VOLCAAANO!!! <small>v0.13</small></h1>
+    </div>
+    <div class="topchips">
+      <span id="profileChip" class="chip">2010 / EARLY</span>
+      <span id="waveStatusTop" class="chip">PRESETS: FALLBACK</span>
+      <span id="bleTop" class="chip">E-STIM DEVICE: SIM</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="machine-column">
+      <div class="machine-frame">
+        <canvas id="machineCanvas" aria-label="541 VOLCAAANO!!! machine simulation"></canvas>
+        <div id="machineMessage" class="machine-message" aria-live="polite">
+          <strong id="messageTitle">READY</strong>
+          <span id="messageSub">BETして黄色のSTARTを押してください</span>
+        </div>
+        <div class="stage-readout">
+          <span id="activeStage">1ST STAGE</span>
+          <strong id="stageState">WAITING</strong>
+        </div>
+      </div>
+
+      <section class="control-deck" aria-label="game controls">
+        <div class="led-cluster">
+          <div class="led-box">
+            <span>MEDAL</span>
+            <strong id="creditDisplay" class="seven">2000</strong>
+          </div>
+          <div class="arrow-box">→</div>
+          <div class="led-box">
+            <span>BET枚数</span>
+            <strong id="betDisplay" class="seven">5</strong>
+          </div>
+        </div>
+
+        <div class="diamond-panel">
+          <div class="diamond-title"><span>DIAMOND CHANCE</span><small>8個でBONUS</small></div>
+          <div id="diamondRow" class="diamonds"></div>
+          <div class="diamond-bonus">BONUS <strong id="diamondBonusValue">20</strong></div>
+        </div>
+
+        <div class="bet-controls">
+          <button id="betMinus" class="bet-btn" type="button" aria-label="BETを減らす">−</button>
+          <button id="betPlus" class="bet-btn" type="button" aria-label="BETを増やす">＋</button>
+          <div class="quick-bet">
+            <button data-bet="5" type="button">5</button>
+            <button data-bet="10" type="button">10</button>
+            <button data-bet="30" type="button">30</button>
+            <button data-bet="50" type="button">50</button>
+            <button data-bet="99" type="button">99 MAX</button>
+          </div>
+        </div>
+
+        <button id="launchButton" class="launch-button" type="button">
+          <span>START</span>
+          <small>BALL SHOOT</small>
+        </button>
+      </section>
+
+      <section class="result-strip">
+        <div><span>LAST RESULT</span><strong id="lastResult">—</strong></div>
+        <div><span>WIN</span><strong id="lastWin">0</strong></div>
+        <div><span>HOLD</span><strong id="holdCount">0 / 4</strong></div>
+        <div><span>HAPTIC REMAIN</span><strong id="payoutRemain">0</strong></div>
+      </section>
+    </section>
+
+    <aside class="side-column">
+      <section class="panel compact">
+        <div class="panel-title">
+          <div><span>OUTPUT</span><h2>E-STIM DEVICE</h2></div>
+          <button id="panicButton" class="panic" type="button">EMERGENCY STOP</button>
+        </div>
+        <div class="mode-row">
+          <button id="simMode" class="mode active" type="button">SIM</button>
+          <button id="realMode" class="mode" type="button">REAL</button>
+          <button id="connectButton" class="mode" type="button" disabled>CONNECT</button>
+        </div>
+        <div class="connection-row">
+          <label><span>接続モード</span><select id="estimConnectMode"><option value="auto">AUTO / 既知機器優先</option><option value="manual">MANUAL / 全機器から選択</option></select></label>
+          <button id="disconnectButton" class="utility-button compact-button" type="button">DISCONNECT</button>
+        </div>
+        <p id="bleStatus" class="status">SIMULATION / 実機出力なし</p>
+
+        <div class="channel-grid">
+          <label><span>A LIMIT <b id="limitAOut">30%</b></span><input id="limitA" type="range" min="0" max="100" value="30"></label>
+          <label><span>B LIMIT <b id="limitBOut">30%</b></span><input id="limitB" type="range" min="0" max="100" value="30"></label>
+        </div>
+        <div class="checks">
+          <label><input id="channelA" type="checkbox" checked> CHANNEL A</label>
+          <label><input id="channelB" type="checkbox" checked> CHANNEL B</label>
+        </div>
+        <div class="test-grid">
+          <button id="testA" class="hold-test" type="button">HOLD TEST A<small>0 → A LIMIT</small></button>
+          <button id="testB" class="hold-test" type="button">HOLD TEST B<small>0 → B LIMIT</small></button>
+        </div>
+        <p class="muted test-help">押している間だけ約3.5秒で0→設定LIMITまで上昇。離すと即ZERO。</p>
+
+        <div class="live-output live-output-v09">
+          <div><span>COMMAND POWER</span><strong id="livePower">0%</strong><small id="liveAB">A 0% / B 0%</small></div>
+          <div><span>PRESET / 刺激種類</span><strong id="livePreset">IDLE</strong><small id="liveMeta">—</small></div>
+        </div>
+        <div class="meter"><i id="powerMeter"></i></div>
+        <div class="stimulus-readout" aria-live="polite">
+          <span>現在流れている刺激</span>
+          <strong id="stimulusNow">待機 / IDLE</strong>
+          <small id="stimulusTech">A/B OUTPUT ZERO</small>
+        </div>
+        <div class="scope-head"><span>POWER HISTORY</span><small>A/B 最終LIMIT後・連続スクロール</small></div>
+        <canvas id="powerHistoryCanvas" class="scope power-scope"></canvas>
+        <div class="scope-head scope-head-wave"><span>FREQ / WIDTH WAVEFORM</span><label>時間 <select id="scopeWindow"><option value="2000">2秒</option><option value="4000" selected>4秒</option><option value="8000">8秒</option></select></label></div>
+        <canvas id="waveformCanvas" class="scope waveform-scope"></canvas>
+        <div class="scope-legend"><span>A</span><span>B</span><small>棒の高さ=WIDTH / 明るさ=POWER / 点密度=周波数</small></div>
+      </section>
+
+      <section id="rotatingPanel" class="panel compact rotating-panel" hidden>
+        <div class="panel-title">
+          <div><span>HIDDEN OUTPUT</span><h2>ROTIATING DEVICE</h2></div>
+          <label class="secret-switch"><input id="rotatingEnabled" type="checkbox"> MODE ON</label>
+        </div>
+        <div class="connection-row rotating-connect">
+          <label><span>接続モード</span><select id="rotatingConnectMode"><option value="auto">AUTO / 既知機器優先</option><option value="manual">MANUAL / 全機器から選択</option></select></label>
+          <div class="rotating-connect-buttons"><button id="rotatingConnect" class="utility-button compact-button" type="button">CONNECT</button><button id="rotatingDisconnect" class="utility-button compact-button" type="button">DISCONNECT</button></div>
+        </div>
+        <p id="rotatingStatus" class="status">HIDDEN MODE / OFF</p>
+        <div class="channel-grid">
+          <label><span>MIN <b id="rotatingMinOut">8%</b></span><input id="rotatingMin" type="range" min="0" max="100" value="8"></label>
+          <label><span>MAX <b id="rotatingMaxOut">100%</b></span><input id="rotatingMax" type="range" min="0" max="100" value="100"></label>
+        </div>
+        <div id="rotatingLive" class="rotating-live">
+          <div><span>SOURCE</span><strong id="rotatingSource">0%</strong><small>POWER + 波形LEVEL</small></div>
+          <div><span>TARGET</span><strong id="rotatingTarget">0%</strong><small id="rotatingDriveMode">OFF</small></div>
+          <div><span>ACTUAL</span><strong id="rotatingActual">0%</strong><small>送信出力</small></div>
+        </div>
+        <div id="rotatingGraphWrap" hidden>
+          <div class="scope-head"><span>ROTIATING OUTPUT</span><small>目標 / 実出力・25%以下は断続</small></div>
+          <canvas id="rotatingCanvas" class="scope rotating-scope"></canvas>
+        </div>
+        <p class="muted">刺激中のみ「E-STIM COMMAND POWER + プリセット波形LEVEL」を加算して0～100%へ飽和し、MIN～MAXへマッピングします。最終TARGETが25%以下なら8Hzの断続駆動へ変換します。</p>
+      </section>
+
+      <details class="panel" open>
+        <summary>GAME MODEL / 再現設定</summary>
+        <div class="detail-body">
+          <label class="field"><span>ROM / PHYSICS PROFILE</span>
+            <select id="physicsProfile">
+              <option value="early">2010 EARLY / 安定回転</option>
+              <option value="countermeasure">LATE / 対策ROM相当</option>
+            </select>
+          </label>
+          <label class="field"><span>DIAMOND BONUS（店舗設定）</span><input id="diamondBonus" type="number" min="1" max="999" value="20"></label>
+          <label class="field"><span>音量</span><input id="audioVolume" type="range" min="0" max="100" value="28"></label>
+          <div class="utility-row"><button id="insertMedals" class="utility-button" type="button">MEDAL INSERT +100</button><button id="factoryReset" class="utility-button reset-button" type="button">初期状態に戻す</button></div>
+          <div class="notice">プレイヤーが操作できるのはBETと最初のBALL SHOOTだけです。1～3段目は固定往復レール＋中央入口ギャップを通り、ポケット列だけが公転する再現モデルです。発射後はゲーム操作をロックします。EMERGENCY STOPはゲーム外の出力停止です。</div>
+        </div>
+      </details>
+
+      <details class="panel">
+        <summary>HAPTIC PAYOUT / 刺激払い出し</summary>
+        <div class="detail-body">
+          <div class="payout-head"><span id="payoutClass" class="chip">IDLE</span><strong id="payoutChunk">+0</strong></div>
+          <div class="payout-counter"><span>払い戻し</span><strong id="payoutCounter">0 / 0</strong><small id="payoutProgressText">0%</small></div>
+          <div id="payoutBlockRow" class="payout-block" hidden><span>SJP BLOCK</span><strong id="payoutBlock">—</strong><small id="payoutBlockAmount">—</small></div>
+          <div class="meter payout"><i id="payoutMeter"></i></div>
+          <div class="payout-live">
+            <span>NOW / 現在の刺激</span>
+            <strong id="payoutLiveType">IDLE</strong>
+            <div><b id="payoutLiveStrength">0%</b><small id="payoutLiveDetail">A 0% / B 0% · OUTPUT ZERO</small></div>
+          </div>
+          <p class="muted">総WIN＝刺激の総払い戻し量。1回の払い戻しCHUNKが大きいほどPowerと相対刺激負荷帯が上がります。SUPER JACKPOTは払い出し枚数をブロックに分け、各ブロック内を高密度で払い出します。後半ほどPower/HARDNESS/密度が上がり、最後のブロックはFINALEになります。追加の架空刺激は入れず、実際の払い出し枚数だけを刺激化します。</p>
+        </div>
+      </details>
+
+      <details class="panel">
+        <summary>PRESET STIMULI / 相対刺激負荷</summary>
+        <div class="detail-body">
+          <div class="toolbar"><button id="syncWaves" type="button">プリセット刺激24種を同期</button><span id="waveStatus">FALLBACK</span></div>
+          <div class="rank-wrap"><table><thead><tr><th>#</th><th>PRESET</th><th>CLASS</th><th>INDEX</th></tr></thead><tbody id="rankBody"></tbody></table></div>
+          <p class="muted">INDEXは同一Channel Power条件でプリセット波形を比較する相対指標です。医学的な疼痛尺度ではありません。</p>
+        </div>
+      </details>
+
+      <details class="panel">
+        <summary>DIAGNOSTICS / 物理状態</summary>
+        <div class="detail-body diag-grid">
+          <div><span>SEED</span><strong id="diagSeed">—</strong></div>
+          <div><span>MOTOR</span><strong id="diagMotor">—</strong></div>
+          <div><span>SWINGS</span><strong id="diagSwings">0</strong></div>
+          <div><span>LAUNCH DELAY</span><strong id="diagDelay">—</strong></div>
+          <div><span>ACTIVE SLOT</span><strong id="diagSlot">—</strong></div>
+          <div><span>MODEL</span><strong id="diagModel">UNIFIED CONTOUR / GATE</strong></div>
+          <label class="diag-toggle"><input id="debugHitbox" type="checkbox"> 輪郭/HITBOX表示</label>
+        </div>
+      </details>
+    </aside>
+  </main>
+
+  <footer>
+    Functional reconstruction based on public KAZAAAN documentation and observed play behavior. Original artwork/music is not included.
+  </footer>
+
+  <script defer src="js/kazaaan-data.js"></script>
+  <script defer src="js/kazaaan-physics.js"></script>
+  <script defer src="js/haptics.js"></script>
+  <script defer src="js/rotating.js"></script>
+  <script defer src="js/app.js"></script>
+</body>
+</html>

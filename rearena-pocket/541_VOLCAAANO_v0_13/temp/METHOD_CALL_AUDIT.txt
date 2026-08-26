@@ -1,0 +1,4 @@
+HAPTIC KAZAAAN v0.8 — APP -> PHYSICS METHOD CALL AUDIT
+calls: carrierProfile, currentSlot, entryPoint, gateGeometry, gatePoint, kickMotorOnUp, period, setProfile, startStage, stepMotors, stepTrial
+unknown: []
+PASS

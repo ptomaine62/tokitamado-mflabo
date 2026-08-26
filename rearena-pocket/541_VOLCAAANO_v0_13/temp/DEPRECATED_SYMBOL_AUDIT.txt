@@ -1,0 +1,2 @@
+HAPTIC KAZAAAN v0.8 — DEPRECATED EXECUTABLE SYMBOL AUDIT
+PASS — deprecated executable symbols: 0
