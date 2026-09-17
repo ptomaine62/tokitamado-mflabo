@@ -1,0 +1,10 @@
+{
+  "name": "COYOTE REMOTE WEB",
+  "short_name": "COYOTE REMOTE",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0a0d10",
+  "theme_color": "#0a0d10",
+  "lang": "ja",
+  "description": "COYOTE V3 local and remote browser controller"
+}
