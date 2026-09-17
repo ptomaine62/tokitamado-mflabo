@@ -1,10 +1,10 @@
 {
-  "name": "COYOTE REMOTE WEB",
-  "short_name": "COYOTE REMOTE",
+  "name": "E-STIM REMOTE WEB",
+  "short_name": "E-STIM REMOTE",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0a0d10",
   "theme_color": "#0a0d10",
   "lang": "ja",
-  "description": "COYOTE V3 local and remote browser controller"
+  "description": "E-STIM device local and remote browser controller"
 }
