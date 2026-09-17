@@ -1,5 +1,5 @@
-const CACHE='coyote-remote-v0.1.9-github1';
+const CACHE='coyote-remote-v0.1.9-github2';
 const ASSETS=["./","./index.html","./manifest.webmanifest","./bundle/p01.txt","./bundle/p02.txt","./bundle/p03.txt","./bundle/p04.txt","./bundle/p05.txt","./bundle/p06.txt","./bundle/p07.txt","./bundle/p08.txt","./bundle/p09.txt","./bundle/p10.txt","./bundle/p11.txt","./bundle/p12.txt","./bundle/p13.txt","./bundle/p14.txt","./bundle/p15.txt","./bundle/p16.txt","./bundle/p17.txt","./bundle/p18.txt","./bundle/p19.txt","./bundle/p20.txt","./bundle/p21.txt","./bundle/p22.txt","./bundle/p23.txt","./bundle/p24.txt","./bundle/p25.txt","./bundle/p26.txt","./bundle/p27.txt","./bundle/p28.txt","./bundle/p29.txt","./bundle/p30.txt"];
-self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))));
-self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))));
+self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)))});
+self.addEventListener('activate',e=>e.waitUntil((async()=>{for(const k of await caches.keys())if(k!==CACHE)await caches.delete(k);await self.clients.claim()})()));
 self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)))});
