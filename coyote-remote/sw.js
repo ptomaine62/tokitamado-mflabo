@@ -1,4 +1,4 @@
-const CACHE='estim-remote-v0.2.3-peer-host1';
+const CACHE='estim-remote-v0.2.4-diag1';
 const ASSETS=['./','./index.html','./manifest.webmanifest','./vendor/peerjs.min.js'];
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)))});
 self.addEventListener('activate',e=>e.waitUntil((async()=>{for(const k of await caches.keys())if(k!==CACHE)await caches.delete(k);await self.clients.claim()})()));
