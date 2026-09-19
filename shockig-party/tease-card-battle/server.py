@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import socketio
 from aiohttp import web
 
-from game_engine import GameEngine, PHASE_COUNTDOWN, PHASE_GAME_OVER, PHASE_REVEAL
+from game_engine import (
+    GameEngine,
+    PHASE_CONTINUOUS,
+    PHASE_COUNTDOWN,
+    PHASE_GAME_OVER,
+    PHASE_PANIC,
+    PHASE_READY,
+    PHASE_REVEAL,
+    PHASE_WAITING,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -23,10 +32,10 @@ sio.attach(app)
 @dataclass
 class RoomRuntime:
     engine: GameEngine
-    sid_to_role: dict[str, str] = field(default_factory=dict)
-    sid_to_name: dict[str, str] = field(default_factory=dict)
-    spectators: set[str] = field(default_factory=set)
-    timers: list[asyncio.Task[Any]] = field(default_factory=list)
+    sid_to_role: dict[str, str]
+    sid_to_name: dict[str, str]
+    spectators: set[str]
+    resolution_task: asyncio.Task[Any] | None = None
 
 
 rooms: dict[str, RoomRuntime] = {}
@@ -49,8 +58,19 @@ app.router.add_static("/static/", STATIC_DIR, show_index=False)
 def get_room(room_id: str) -> RoomRuntime:
     safe_room = (room_id or "default").strip()[:48] or "default"
     if safe_room not in rooms:
-        rooms[safe_room] = RoomRuntime(GameEngine(safe_room))
+        rooms[safe_room] = RoomRuntime(
+            engine=GameEngine(safe_room),
+            sid_to_role={},
+            sid_to_name={},
+            spectators=set(),
+        )
     return rooms[safe_room]
+
+
+def cancel_resolution_task(room: RoomRuntime) -> None:
+    if room.resolution_task and not room.resolution_task.done():
+        room.resolution_task.cancel()
+    room.resolution_task = None
 
 
 def public_room_state(room: RoomRuntime) -> dict[str, Any]:
@@ -75,6 +95,27 @@ async def emit_error(sid: str, message: str) -> None:
     await sio.emit("error_message", {"message": message}, to=sid)
 
 
+def start_game_failure_reason(room: RoomRuntime) -> str | None:
+    state = room.engine.state
+    p1 = state.players["p1"]
+    p2 = state.players["p2"]
+    if state.phase == PHASE_PANIC:
+        return "開始できません: Panic / Stop中です。Resetしてください。"
+    if state.phase == PHASE_GAME_OVER:
+        return "開始できません: ゲーム終了後です。Resetしてください。"
+    if state.phase not in {PHASE_WAITING, PHASE_READY}:
+        return f"開始できません: 現在のフェーズは {state.phase} です。"
+    if not p1.connected:
+        return "開始できません: P1が参加していません。"
+    if not p2.connected:
+        return "開始できません: P2が参加していません。"
+    if not p1.ready:
+        return "開始できません: P1がReadyではありません。"
+    if not p2.ready:
+        return "開始できません: P2がReadyではありません。"
+    return None
+
+
 async def run_resolution_sequence(room_id: str) -> None:
     room = get_room(room_id)
     try:
@@ -85,24 +126,47 @@ async def run_resolution_sequence(room_id: str) -> None:
         await emit_state(room_id)
         if room.engine.state.phase == PHASE_GAME_OVER:
             return
+        if room.engine.state.phase != PHASE_COUNTDOWN:
+            return
         await sio.emit("countdown_start", {"duration_sec": 3}, room=room_id)
         await emit_state(room_id)
         await asyncio.sleep(3)
+        if room.engine.state.phase != PHASE_COUNTDOWN:
+            return
         continuous = room.engine.enter_continuous()
         await sio.emit("continuous_state", continuous, room=room_id)
         await emit_state(room_id)
         await asyncio.sleep(int(continuous.get("duration_sec", 8)))
+        if room.engine.state.phase != PHASE_CONTINUOUS:
+            return
         room.engine.finish_continuous_and_next()
         await emit_state(room_id)
     except asyncio.CancelledError:
-        raise
+        return
     except Exception as exc:
         await sio.emit("error_message", {"message": f"resolve error: {exc}"}, room=room_id)
+    finally:
+        if room.resolution_task and room.resolution_task.done():
+            room.resolution_task = None
+
+
+async def enter_continuous_once(room_id: str) -> None:
+    room = get_room(room_id)
+    if room.engine.state.phase != PHASE_COUNTDOWN:
+        return
+    continuous = room.engine.enter_continuous()
+    await sio.emit("continuous_state", continuous, room=room_id)
+    await emit_state(room_id)
+    await asyncio.sleep(int(continuous.get("duration_sec", 8)))
+    if room.engine.state.phase != PHASE_CONTINUOUS:
+        return
+    room.engine.finish_continuous_and_next()
+    await emit_state(room_id)
 
 
 @sio.event
 async def connect(sid: str, environ: dict[str, Any]) -> None:
-    await sio.emit("room_state", {"message": "connected", "sid": sid}, to=sid)
+    await sio.emit("server_hello", {"message": "connected", "sid": sid}, to=sid)
 
 
 @sio.event
@@ -123,6 +187,9 @@ async def disconnect(sid: str) -> None:
 async def join_room(sid: str, payload: dict[str, Any]) -> None:
     room_id = str(payload.get("room_id", "default")).strip()[:48] or "default"
     display_name = str(payload.get("display_name", "Guest")).strip()[:32] or "Guest"
+    previous_room_id = sid_to_room.get(sid)
+    if previous_room_id and previous_room_id != room_id:
+        await sio.leave_room(sid, previous_room_id)
     room = get_room(room_id)
     sid_to_room[sid] = room_id
     room.sid_to_name[sid] = display_name
@@ -141,16 +208,21 @@ async def select_role(sid: str, payload: dict[str, Any]) -> None:
     if requested not in {"p1", "p2", "spectator"}:
         requested = "spectator"
     occupied = {role for other_sid, role in room.sid_to_role.items() if other_sid != sid and role in {"p1", "p2"}}
-    role = requested if requested not in occupied else "spectator"
+    reason = ""
+    assigned = requested
+    if requested in occupied:
+        assigned = "spectator"
+        reason = f"{requested} is already occupied"
     old_role = room.sid_to_role.get(sid)
-    if old_role in {"p1", "p2"} and old_role != role:
+    if old_role in {"p1", "p2"} and old_role != assigned:
         room.engine.set_player_connected(old_role, old_role.upper(), False)
-    room.sid_to_role[sid] = role
+    room.sid_to_role[sid] = assigned
     room.spectators.discard(sid)
-    if role == "spectator":
+    if assigned == "spectator":
         room.spectators.add(sid)
     else:
-        room.engine.set_player_connected(role, room.sid_to_name.get(sid, role.upper()), True)
+        room.engine.set_player_connected(assigned, room.sid_to_name.get(sid, assigned.upper()), True)
+    await sio.emit("role_assigned", {"requested_role": requested, "assigned_role": assigned, "reason": reason}, to=sid)
     await emit_state(room_id)
 
 
@@ -168,6 +240,29 @@ async def player_ready(sid: str, payload: dict[str, Any]) -> None:
     await emit_state(room_id)
 
 
+@sio.on("start_game")
+async def start_game(sid: str, payload: dict[str, Any]) -> None:
+    room_id = sid_to_room.get(sid)
+    if not room_id:
+        await emit_error(sid, "先にルームへ参加してください。")
+        return
+    room = get_room(room_id)
+    role = room.sid_to_role.get(sid)
+    if role not in {"p1", "p2"}:
+        message = "開始できません: 観戦者はStart Gameできません。"
+        await sio.emit("start_game_failed", {"message": message}, to=sid)
+        return
+    reason = start_game_failure_reason(room)
+    if reason:
+        room.engine.state.logs.append(reason)
+        await sio.emit("start_game_failed", {"message": reason}, to=sid)
+        await emit_state(room_id)
+        return
+    cancel_resolution_task(room)
+    room.engine.start_turn()
+    await emit_state(room_id)
+
+
 @sio.on("choose_card")
 async def choose_card(sid: str, payload: dict[str, Any]) -> None:
     room_id = sid_to_room.get(sid)
@@ -182,9 +277,8 @@ async def choose_card(sid: str, payload: dict[str, Any]) -> None:
         room.engine.choose_card(role, str(payload.get("card_id", "")))
         await sio.emit("card_locked", {"player_id": role}, room=room_id)
         await emit_state(room_id)
-        if room.engine.state.phase == PHASE_REVEAL:
-            task = asyncio.create_task(run_resolution_sequence(room_id))
-            room.timers.append(task)
+        if room.engine.state.phase == PHASE_REVEAL and (room.resolution_task is None or room.resolution_task.done()):
+            room.resolution_task = asyncio.create_task(run_resolution_sequence(room_id))
     except Exception as exc:
         await emit_error(sid, str(exc))
 
@@ -195,9 +289,7 @@ async def panic_stop(sid: str, payload: dict[str, Any]) -> None:
     if not room_id:
         return
     room = get_room(room_id)
-    for task in room.timers:
-        task.cancel()
-    room.timers.clear()
+    cancel_resolution_task(room)
     continuous = room.engine.panic_stop(str(payload.get("reason", "panic")))
     await sio.emit("panic_stop_sync", {"reason": room.engine.state.panic_reason, "continuous_state": continuous}, room=room_id)
     await sio.emit("continuous_state", continuous, room=room_id)
@@ -232,10 +324,10 @@ async def skip_countdown(sid: str, payload: dict[str, Any]) -> None:
     if not room_id:
         return
     room = get_room(room_id)
-    if room.engine.state.phase == PHASE_COUNTDOWN:
-        continuous = room.engine.enter_continuous()
-        await sio.emit("continuous_state", continuous, room=room_id)
-        await emit_state(room_id)
+    if room.engine.state.phase != PHASE_COUNTDOWN:
+        return
+    cancel_resolution_task(room)
+    room.resolution_task = asyncio.create_task(enter_continuous_once(room_id))
 
 
 @sio.on("request_state")
@@ -255,9 +347,7 @@ async def reset_game(sid: str, payload: dict[str, Any]) -> None:
     if role not in {"p1", "p2"}:
         await emit_error(sid, "観戦者はリセットできません。")
         return
-    for task in room.timers:
-        task.cancel()
-    room.timers.clear()
+    cancel_resolution_task(room)
     room.engine.reset_game()
     await emit_state(room_id)
 

@@ -27,6 +27,7 @@ class PlayerState:
     display_name: str = "Player"
     hp: int = MAX_HP
     tp: int = 3
+    # charge = 帯電。ゲーム内数値であり、実機出力や実機制御とは直結しません。
     charge: int = 0
     next_attack_bonus: int = 0
     ready: bool = False
@@ -176,14 +177,23 @@ class GameEngine:
         self._maybe_enter_ready()
 
     def _maybe_enter_ready(self) -> None:
-        if all(p.connected for p in self.state.players.values()):
-            if all(p.ready for p in self.state.players.values()):
-                self.state.phase = PHASE_READY
-                self.start_turn()
-            elif self.state.phase == PHASE_WAITING:
-                self.state.logs.append("P1/P2 が揃いました。Readyを待っています。")
-        else:
+        if self.state.phase in {PHASE_ATTACK_SELECT, PHASE_DEFENSE_SELECT, PHASE_REVEAL, PHASE_RESOLVE, PHASE_COUNTDOWN, PHASE_CONTINUOUS, PHASE_GAME_OVER, PHASE_PANIC}:
+            return
+        if not all(p.connected for p in self.state.players.values()):
             self.state.phase = PHASE_WAITING
+            return
+        if all(p.ready for p in self.state.players.values()):
+            if self.state.phase in {PHASE_WAITING, PHASE_READY}:
+                self.state.phase = PHASE_READY
+                message = "両者READYです。Start Gameを押してください。"
+                if not self.state.logs or self.state.logs[-1] != message:
+                    self.state.logs.append(message)
+        else:
+            if self.state.phase in {PHASE_WAITING, PHASE_READY}:
+                self.state.phase = PHASE_WAITING
+                message = "P1/P2 の参加とReadyを待っています。"
+                if not self.state.logs or self.state.logs[-1] != message:
+                    self.state.logs.append(message)
 
     def start_turn(self) -> None:
         if self.state.phase in {PHASE_PANIC, PHASE_GAME_OVER}:
@@ -305,6 +315,7 @@ class GameEngine:
                 "tp": p.tp,
                 "max_tp": MAX_TP,
                 "charge": p.charge,
+                "static_charge": p.charge,
                 "max_charge": MAX_CHARGE,
                 "next_attack_bonus": p.next_attack_bonus,
                 "ready": p.ready,
